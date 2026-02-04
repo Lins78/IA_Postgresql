@@ -42,7 +42,7 @@ class FallbackChatSystem:
             else:
                 saudacao = f"🌙 Boa noite! Sou o {self.ai_name}, pronto para ajudar com suas consultas!"
             
-            ai_response = f"{saudacao}\\n\\n📋 Posso ajudar com:\\n• Consultas SQL\\n• Otimização de banco\\n• Comandos PostgreSQL\\n• Previsão do tempo no Brasil\\n\\nComo posso ajudar?"
+            ai_response = f"{saudacao}\n\n📋 Posso ajudar com:\n• Consultas SQL\n• Otimização de banco\n• Comandos PostgreSQL\n• Previsão do tempo no Brasil\n\nComo posso ajudar?"
         
         # Previsão do tempo
         elif any(palavra in message_lower for palavra in ['tempo', 'clima', 'chuva', 'sol', 'temperatura', 'previsao']):
@@ -136,7 +136,7 @@ class FallbackChatSystem:
                 break
         
         if cidade_encontrada:
-            return f"🌤️ **Previsão do Tempo**\\n\\n{cidade_encontrada}\\n\\n💡 Para outras cidades, pergunte: 'Como está o tempo em [cidade]?'"
+            return f"🌤️ **Previsão do Tempo**\n\n{cidade_encontrada}\n\n💡 Para outras cidades, pergunte: 'Como está o tempo em [cidade]?'"
         else:
             return """🌤️ **Previsão do Tempo - Brasil**
 

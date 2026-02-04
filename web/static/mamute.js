@@ -108,7 +108,16 @@ class MamuteClient {
 
         const messageDiv = document.createElement('div');
         messageDiv.className = `message ${type}`;
-        messageDiv.textContent = text;
+        
+        // Converter quebras de linha para HTML e preservar formatação
+        const formattedText = text
+            .replace(/\n/g, '<br>')
+            .replace(/\t/g, '&nbsp;&nbsp;&nbsp;&nbsp;')
+            .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')  // **bold**
+            .replace(/\*(.*?)\*/g, '<em>$1</em>')              // *italic*
+            .replace(/`(.*?)`/g, '<code>$1</code>');           // `code`
+        
+        messageDiv.innerHTML = formattedText;
         
         messagesContainer.appendChild(messageDiv);
         messagesContainer.scrollTop = messagesContainer.scrollHeight;

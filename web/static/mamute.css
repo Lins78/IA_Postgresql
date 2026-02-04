@@ -203,6 +203,43 @@ body {
 .message.mamute {
     background: #f3e5f5;
     margin-right: auto;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+
+/* Formatação especial para mensagens do Mamute */
+.message.mamute strong {
+    color: var(--primary-color);
+    font-weight: 600;
+}
+
+.message.mamute em {
+    color: var(--text-light);
+    font-style: italic;
+}
+
+.message.mamute code {
+    background: rgba(0, 0, 0, 0.08);
+    padding: 0.2rem 0.4rem;
+    border-radius: 4px;
+    font-family: 'Courier New', monospace;
+    font-size: 0.9em;
+}
+
+.message.mamute ul, .message.mamute ol {
+    margin: 0.5rem 0;
+    padding-left: 1.5rem;
+}
+
+.message.mamute li {
+    margin: 0.2rem 0;
+}
+
+/* Melhor espaçamento para listas formatadas */
+.message.mamute br + • {
+    display: block;
+    margin-top: 0.3rem;
 }
 
 .message.system {
