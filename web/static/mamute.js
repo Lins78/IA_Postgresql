@@ -72,6 +72,32 @@ class MamuteClient {
             // Adicionar resposta do Mamute
             this.addMessage('🐘 Mamute: ' + data.response, 'mamute');
             
+            // Mostrar informações do modo proativo se disponível
+            if (data.proactive_mode && data.applied_improvements?.length > 0) {
+                this.addMessage(
+                    `🚀 Modo Proativo: ${data.applied_improvements.length} melhorias aplicadas automaticamente!`,
+                    'proactive-success'
+                );
+                
+                data.applied_improvements.forEach(improvement => {
+                    this.addMessage(
+                        `✅ ${improvement.action}: ${improvement.description}`,
+                        'improvement'
+                    );
+                });
+            }
+            
+            // Mostrar sugestões de melhorias se houver
+            if (data.suggested_improvements?.length > 0) {
+                this.addMessage('💡 Sugestões de melhorias:', 'system');
+                data.suggested_improvements.forEach(suggestion => {
+                    this.addMessage(
+                        `💭 ${suggestion.action}: ${suggestion.description} (Confiança: ${(suggestion.confidence * 100).toFixed(1)}%)`,
+                        'suggestion'
+                    );
+                });
+            }
+            
             // Mostrar estatísticas se disponíveis
             if (data.tokens_used) {
                 this.addMessage(
@@ -154,6 +180,56 @@ class MamuteClient {
         // Auto-focus no input
         if (input) {
             input.focus();
+        }
+        
+        // Controles do modo proativo
+        this.setupProactiveControls();
+    }
+    
+    async setupProactiveControls() {
+        // Verificar status inicial do modo proativo
+        try {
+            const response = await fetch('/proactive/status');
+            const data = await response.json();
+            
+            this.updateProactiveDisplay(data.proactive_mode);
+        } catch (error) {
+            console.warn('Modo proativo não disponível:', error);
+        }
+    }
+    
+    async toggleProactiveMode() {
+        try {
+            const response = await fetch('/proactive/toggle', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+            
+            const data = await response.json();
+            this.updateProactiveDisplay(data.proactive_mode);
+            
+            this.addMessage(
+                `🔄 ${data.message}`, 
+                data.proactive_mode ? 'proactive-success' : 'system'
+            );
+            
+        } catch (error) {
+            console.error('Erro ao alterar modo proativo:', error);
+            this.addMessage('❌ Erro ao alterar modo proativo: ' + error.message, 'system');
+        }
+    }
+    
+    updateProactiveDisplay(enabled) {
+        const toggle = document.getElementById('proactiveToggle');
+        if (toggle) {
+            toggle.checked = enabled;
+            toggle.title = enabled ? 'Modo Proativo Ativo' : 'Modo Proativo Inativo';
+        }
+        
+        const status = document.getElementById('proactiveStatus');
+        if (status) {
+            status.textContent = enabled ? 'Proativo ON' : 'Proativo OFF';
+            status.className = `proactive-status ${enabled ? 'active' : 'inactive'}`;
         }
     }
 }

@@ -15,6 +15,13 @@ from src.ai.agent import AIAgent
 from src.ai.embeddings import EmbeddingManager
 from src.ai.chat import ChatManager
 
+# Importar sistema de personalidade
+try:
+    from mamute_chat_personality import MamuteChatPersonality
+    PERSONALITY_AVAILABLE = True
+except ImportError:
+    PERSONALITY_AVAILABLE = False
+
 class IAPostgreSQL:
     """Classe principal para o sistema de IA conectada ao PostgreSQL"""
     
@@ -42,6 +49,15 @@ class IAPostgreSQL:
             self.ai_agent, 
             self.embedding_manager
         )
+        
+        # Inicializar sistema de personalidade se disponível
+        self.chat_personality = None
+        if PERSONALITY_AVAILABLE:
+            try:
+                self.chat_personality = MamuteChatPersonality(env_file)
+                self.logger.info("🎭 Sistema de personalidade inicializado com sucesso")
+            except Exception as e:
+                self.logger.warning(f"Não foi possível inicializar personalidade: {e}")
         
         self.logger.info("Sistema de IA PostgreSQL inicializado com sucesso")
     

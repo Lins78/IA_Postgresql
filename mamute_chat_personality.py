@@ -17,6 +17,7 @@ from src.ai.embeddings import EmbeddingManager
 from src.ai.agent import AIAgent
 from src.ai.fallback_chat import FallbackChatSystem
 from mamute_personality import MamutePersonality
+from mamute_proactive_ai import MamuteProactiveIA
 
 class MamuteChatIA:
     """Sistema de Chat IA Mamute com personalidade avançada"""
@@ -33,8 +34,10 @@ class MamuteChatIA:
         self.fallback_system = FallbackChatSystem()
         
         # Sistema de personalidade
-        self.personality = MamutePersonality()
-        
+        self.personality = MamutePersonality()        
+        # IA Proativa para aplicar melhorias automaticamente
+        self.proactive_ai = MamuteProactiveIA(config_file)
+        self.proactive_mode = True  # Modo proativo ativado por padrão        
         # Estado da sessão
         self.session_start = datetime.now()
         self.conversation_history: List[Dict] = []
@@ -68,14 +71,23 @@ class MamuteChatIA:
         # Dicas úteis personalizadas
         tips_emoji = self.personality.get_emoji('info')
         help_emoji = self.personality.get_emoji('help')
+        proactive_emoji = self.personality.get_emoji('celebration')
         
         tips = f"\n\n{tips_emoji} **O que posso fazer por você:**\n" + \
                "• Responder perguntas sobre seus dados 🤔\n" + \
                "• Buscar informações específicas 🔍\n" + \
                "• Criar análises e resumos 📊\n" + \
                "• Gerar gráficos e visualizações 📈\n" + \
-               "• Conversar naturalmente sobre qualquer tópico 💬\n\n" + \
+               "• Conversar naturalmente sobre qualquer tópico 💬\n" + \
+               f"• **NOVO**: Aplicar melhorias automaticamente! {proactive_emoji}\n\n" + \
                f"Digite 'ajuda' a qualquer momento! {help_emoji}"
+        
+        # Informação sobre modo proativo
+        proactive_info = f"\n\n{proactive_emoji} **Modo Proativo Ativo!**\n" + \
+                        "✨ Agora eu não apenas sugiro melhorias - EU AS APLICO!\n" + \
+                        "🔧 Otimizações seguras são aplicadas automaticamente\n" + \
+                        "💡 Melhorias arriscadas pedem sua confirmação\n" + \
+                        "📊 Acompanhe todas as melhorias aplicadas em tempo real"
         
         # Adicionar starter de conversa ocasional
         conversation_starter = ""
@@ -83,15 +95,16 @@ class MamuteChatIA:
             conversation_starter = f"\n\n{self.personality.get_conversation_starter()}"
         
         return {
-            'response': greeting + stats_msg + tips + conversation_starter,
+            'response': greeting + stats_msg + tips + proactive_info + conversation_starter,
             'type': 'welcome',
             'timestamp': datetime.now().isoformat(),
             'session_id': id(self),
-            'personality_mode': True
+            'personality_mode': True,
+            'proactive_mode': self.proactive_mode
         }
     
     async def get_response(self, user_input: str, context: Dict = None) -> Dict[str, Any]:
-        """Gerar resposta com personalidade avançada"""
+        """Gerar resposta com personalidade avançada e melhorias automáticas"""
         try:
             # Atualizar estatísticas
             self.session_stats['queries'] += 1
@@ -104,38 +117,36 @@ class MamuteChatIA:
                 'type': 'user_input'
             })
             
-            # Analisar tipo de consulta
-            query_type = self._analyze_query_type(user_input)
-            
             # Log personalizado
             thinking_emoji = self.personality.get_emoji('thinking')
-            self.logger.info(f"{thinking_emoji} Processando [{query_type}]: {user_input[:50]}...")
+            self.logger.info(f"{thinking_emoji} Processando [{self._analyze_query_type(user_input)}]: {user_input[:50]}...")
             
-            # Processar consulta baseado no tipo
-            if query_type == 'greeting':
-                response = self._handle_greeting()
-            elif query_type == 'help':
-                response = self._handle_help_request()
-            elif query_type == 'compliment':
-                response = self._handle_compliment(user_input)
-            elif query_type == 'stats':
-                response = self._handle_stats_request()
-            elif query_type in ['search', 'question']:
-                response = await self._handle_search_query(user_input, context)
-            elif query_type == 'analysis':
-                response = await self._handle_analysis_request(user_input)
+            # Usar IA Proativa se habilitada
+            if self.proactive_mode and hasattr(self, 'proactive_ai'):
+                response = await self.proactive_ai.analyze_and_improve(user_input, context)
+                
+                # Verificar se houve melhorias aplicadas
+                if response.get('applied_improvements'):
+                    self.session_stats['successful_queries'] += 1
+                    
+                    # Log das melhorias aplicadas
+                    success_emoji = self.personality.get_emoji('success')
+                    improvements_count = len(response['applied_improvements'])
+                    self.logger.info(f"{success_emoji} Aplicadas {improvements_count} melhorias automaticamente!")
             else:
-                response = await self._handle_general_query(user_input, context)
+                # Fallback para processamento normal
+                response = await self._process_standard_query(user_input, context)
             
-            # Adicionar toque de personalidade
-            if 'response' in response and response['type'] != 'welcome':
+            # Adicionar toque de personalidade se não for resposta proativa
+            if not response.get('proactive_mode') and 'response' in response:
                 response['response'] = self.personality.add_personality_touch(response['response'])
             
             # Adicionar à história
             self.conversation_history.append({
                 'assistant': response['response'],
                 'timestamp': response['timestamp'],
-                'type': response['type']
+                'type': response['type'],
+                'proactive_mode': response.get('proactive_mode', False)
             })
             
             return response
@@ -156,9 +167,51 @@ class MamuteChatIA:
                 'personality_mode': True
             }
     
+    async def _process_standard_query(self, user_input: str, context: Dict = None) -> Dict[str, Any]:
+        """Processar consulta usando método padrão (fallback)"""
+        # Analisar tipo de consulta
+        query_type = self._analyze_query_type(user_input)
+        
+        # Processar consulta baseado no tipo
+        if query_type == 'greeting':
+            return self._handle_greeting()
+        elif query_type == 'help':
+            return self._handle_help_request()
+        elif query_type == 'compliment':
+            return self._handle_compliment(user_input)
+        elif query_type == 'stats':
+            return self._handle_stats_request()
+        elif query_type in ['search', 'question']:
+            return await self._handle_search_query(user_input, context)
+        elif query_type == 'analysis':
+            return await self._handle_analysis_request(user_input)
+        else:
+            return await self._handle_general_query(user_input, context)
+    
+    def toggle_proactive_mode(self, enabled: bool = None) -> bool:
+        """Alternar ou definir modo proativo"""
+        if enabled is None:
+            self.proactive_mode = not self.proactive_mode
+        else:
+            self.proactive_mode = enabled
+        
+        mode_emoji = self.personality.get_emoji('success' if self.proactive_mode else 'info')
+        status = "ATIVADO" if self.proactive_mode else "DESATIVADO"
+        self.logger.info(f"{mode_emoji} Modo Proativo {status}")
+        
+        return self.proactive_mode
+    
     def _analyze_query_type(self, query: str) -> str:
         """Analisar tipo de consulta com melhor detecção"""
         query_lower = query.lower().strip()
+        
+        # Comandos do modo proativo
+        if any(term in query_lower for term in ['aplicar', 'ativar proativo', 'modo proativo']):
+            return 'proactive_command'
+        
+        # Solicitações de melhoria
+        if any(term in query_lower for term in ['melhorar', 'otimizar', 'corrigir', 'acelerar']):
+            return 'improvement_request'
         
         # Saudações expandidas
         greetings = ['oi', 'olá', 'ola', 'hey', 'bom dia', 'boa tarde', 'boa noite', 

@@ -323,6 +323,144 @@ body {
     font-size: 0.9rem;
 }
 
+/* Estilos para Modo Proativo */
+.message.proactive-success {
+    background: linear-gradient(135deg, #28a745, #20c997);
+    color: white;
+    font-weight: 600;
+    margin-left: 0;
+    border-radius: 15px;
+    padding: 1rem 1.5rem;
+    animation: proactiveGlow 2s ease-out;
+}
+
+.message.improvement {
+    background: linear-gradient(135deg, #17a2b8, #6f42c1);
+    color: white;
+    margin-left: 1rem;
+    border-radius: 12px;
+    padding: 0.8rem 1.2rem;
+    font-size: 0.9rem;
+    animation: slideInLeft 0.5s ease-out;
+}
+
+.message.suggestion {
+    background: linear-gradient(135deg, #ffc107, #fd7e14);
+    color: #212529;
+    margin-left: 1rem;
+    border-radius: 12px;
+    padding: 0.8rem 1.2rem;
+    font-size: 0.9rem;
+    animation: slideInLeft 0.5s ease-out;
+}
+
+.proactive-status {
+    padding: 0.5rem 1rem;
+    border-radius: 20px;
+    font-size: 0.8rem;
+    font-weight: bold;
+    transition: all 0.3s ease;
+}
+
+.proactive-status.active {
+    background: linear-gradient(135deg, #28a745, #20c997);
+    color: white;
+    animation: pulse 2s infinite;
+}
+
+.proactive-status.inactive {
+    background: var(--border-color);
+    color: var(--text-light);
+}
+
+/* Controles do Modo Proativo */
+.proactive-controls {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 1rem;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 10px;
+    margin-bottom: 1rem;
+}
+
+.proactive-toggle {
+    position: relative;
+    width: 60px;
+    height: 30px;
+}
+
+.proactive-toggle input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.proactive-slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: #ccc;
+    transition: 0.4s;
+    border-radius: 30px;
+}
+
+.proactive-slider:before {
+    position: absolute;
+    content: "";
+    height: 22px;
+    width: 22px;
+    left: 4px;
+    bottom: 4px;
+    background-color: white;
+    transition: 0.4s;
+    border-radius: 50%;
+}
+
+input:checked + .proactive-slider {
+    background: linear-gradient(135deg, #28a745, #20c997);
+}
+
+input:checked + .proactive-slider:before {
+    transform: translateX(30px);
+}
+
+/* Animações */
+@keyframes proactiveGlow {
+    0% {
+        box-shadow: 0 0 5px rgba(40, 167, 69, 0.5);
+    }
+    50% {
+        box-shadow: 0 0 20px rgba(40, 167, 69, 0.8);
+    }
+    100% {
+        box-shadow: 0 0 5px rgba(40, 167, 69, 0.5);
+    }
+}
+
+@keyframes slideInLeft {
+    from {
+        transform: translateX(-20px);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+@keyframes pulse {
+    0%, 100% {
+        transform: scale(1);
+    }
+    50% {
+        transform: scale(1.05);
+    }
+}
+
 /* Loading Animation */
 .loading {
     display: inline-block;

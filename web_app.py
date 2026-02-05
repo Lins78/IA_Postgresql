@@ -395,7 +395,7 @@ async def start_session(session_data: SessionStart):
 
 @app.post("/chat")
 async def chat_endpoint(chat_data: ChatMessage):
-    """Endpoint para conversar com Mamute"""
+    """Endpoint para conversar com Mamute (Modo Proativo)"""
     if not ia_system:
         raise HTTPException(status_code=503, detail="Sistema não inicializado")
     
@@ -406,26 +406,105 @@ async def chat_endpoint(chat_data: ChatMessage):
         session_id = chat_data.session_id
     
     try:
-        response = ia_system.chat_manager.send_message(
-            message=chat_data.message, 
-            session_id=session_id, 
-            use_context=chat_data.use_context,
-            search_documents=True
-        )
-        
-        logger.info(f"Chat web - Sessão: {session_id}, Tokens: {response.get('tokens_used', 0)}")
-        
-        return {
-            "response": response["response"],
-            "session_id": session_id,
-            "tokens_used": response.get("tokens_used", 0),
-            "response_time": response.get("response_time", 0),
-            "relevant_documents": response.get("relevant_documents", []),
-            "mamute_name": ia_system.config.ai_name
-        }
+        # Usar novo sistema de chat com personalidade e IA proativa
+        if hasattr(ia_system, 'chat_personality') and ia_system.chat_personality:
+            response = await ia_system.chat_personality.get_response(
+                user_input=chat_data.message,
+                context={
+                    'session_id': session_id,
+                    'use_context': chat_data.use_context,
+                    'search_documents': True
+                }
+            )
+            
+            # Log detalhado para modo proativo
+            proactive_info = ""
+            if response.get('proactive_mode'):
+                applied_improvements = response.get('applied_improvements', [])
+                if applied_improvements:
+                    proactive_info = f" | Melhorias: {len(applied_improvements)}"
+                    logger.info(f"🚀 Modo Proativo - {len(applied_improvements)} melhorias aplicadas automaticamente!")
+            
+            logger.info(f"Chat Proativo - Sessão: {session_id}{proactive_info}")
+            
+            return {
+                "response": response["response"],
+                "session_id": session_id,
+                "tokens_used": response.get("tokens_used", 0),
+                "response_time": response.get("response_time", 0),
+                "relevant_documents": response.get("relevant_documents", []),
+                "mamute_name": ia_system.config.ai_name,
+                "personality_mode": response.get("personality_mode", True),
+                "proactive_mode": response.get("proactive_mode", False),
+                "applied_improvements": response.get("applied_improvements", []),
+                "suggested_improvements": response.get("suggested_improvements", []),
+                "improvement_confidence": response.get("improvement_confidence", 0.0)
+            }
+        else:
+            # Fallback para sistema original
+            response = ia_system.chat_manager.send_message(
+                message=chat_data.message, 
+                session_id=session_id, 
+                use_context=chat_data.use_context,
+                search_documents=True
+            )
+            
+            logger.info(f"Chat Fallback - Sessão: {session_id}, Tokens: {response.get('tokens_used', 0)}")
+            
+            return {
+                "response": response["response"],
+                "session_id": session_id,
+                "tokens_used": response.get("tokens_used", 0),
+                "response_time": response.get("response_time", 0),
+                "relevant_documents": response.get("relevant_documents", []),
+                "mamute_name": ia_system.config.ai_name
+            }
         
     except Exception as e:
         logger.error(f"Erro no chat: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/proactive/toggle")
+async def toggle_proactive_mode(enabled: Optional[bool] = None):
+    """Ativar/Desativar modo proativo"""
+    if not ia_system:
+        raise HTTPException(status_code=503, detail="Sistema não inicializado")
+    
+    try:
+        if hasattr(ia_system, 'chat_personality') and ia_system.chat_personality:
+            current_mode = ia_system.chat_personality.toggle_proactive_mode(enabled)
+            return {
+                "proactive_mode": current_mode,
+                "message": f"Modo proativo {'ativado' if current_mode else 'desativado'} com sucesso!",
+                "timestamp": datetime.now().isoformat()
+            }
+        else:
+            raise HTTPException(status_code=503, detail="Sistema de personalidade não disponível")
+    except Exception as e:
+        logger.error(f"Erro ao alterar modo proativo: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/proactive/status")
+async def get_proactive_status():
+    """Obter status do modo proativo"""
+    if not ia_system:
+        raise HTTPException(status_code=503, detail="Sistema não inicializado")
+    
+    try:
+        if hasattr(ia_system, 'chat_personality') and ia_system.chat_personality:
+            return {
+                "proactive_mode": getattr(ia_system.chat_personality, 'proactive_mode', False),
+                "proactive_available": hasattr(ia_system.chat_personality, 'proactive_ai'),
+                "timestamp": datetime.now().isoformat()
+            }
+        else:
+            return {
+                "proactive_mode": False,
+                "proactive_available": False,
+                "timestamp": datetime.now().isoformat()
+            }
+    except Exception as e:
+        logger.error(f"Erro ao obter status proativo: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/documents")
