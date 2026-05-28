@@ -24,15 +24,27 @@ class EmbeddingManager:
         self.config = config
         self.db_manager = db_manager
         self.logger = setup_logger(__name__, config.log_level)
-        
-        # Configurar OpenAI para embeddings
+
+        # Controlar uso de OpenAI via flag e chave
+        self.use_openai = bool(getattr(config, "use_openai", False) and config.openai_api_key)
+
+        # Configurar OpenAI para embeddings apenas se habilitado
         try:
-            import openai
-            self.client = openai.OpenAI(api_key=config.openai_api_key)
-            self.embedding_model = "text-embedding-ada-002"
+            if self.use_openai:
+                import openai
+                self.client = openai.OpenAI(api_key=config.openai_api_key)
+                self.embedding_model = "text-embedding-ada-002"
+            else:
+                self.client = None
+                self.embedding_model = None
+                if not getattr(config, "use_openai", False):
+                    self.logger.info("OpenAI desabilitado para embeddings (USE_OPENAI=false)")
+                else:
+                    self.logger.warning("Chave OpenAI ausente; embeddings desabilitados")
         except ImportError:
             self.logger.warning("OpenAI não disponível para embeddings")
             self.client = None
+            self.embedding_model = None
     
     def create_embedding(self, text: str) -> List[float]:
         """
@@ -45,7 +57,7 @@ class EmbeddingManager:
             List[float]: Vetor de embedding
         """
         if not self.client:
-            raise ValueError("Cliente OpenAI não configurado")
+            raise RuntimeError("Embeddings desabilitados (USE_OPENAI=false ou OPENAI_API_KEY ausente)")
         
         try:
             response = self.client.embeddings.create(
@@ -56,9 +68,12 @@ class EmbeddingManager:
             self.logger.debug(f"Embedding criado para texto de {len(text)} caracteres")
             return embedding
             
-        except Exception as e:
-            self.logger.error(f"Erro ao criar embedding: {e}")
-            raise
+        except Exception:
+            # Evitar vazar dados sensíveis (ex.: chave inválida). Desabilitar embeddings nesta instância.
+            self.logger.error("Erro ao criar embedding; OpenAI desabilitado para embeddings nesta sessão (detalhes ocultos).")
+            self.use_openai = False
+            self.client = None
+            raise RuntimeError("OpenAI indisponível para embeddings")
     
     def add_document(self, title: str, content: str, file_path: Optional[str] = None, 
                     file_type: Optional[str] = None, metadata: Optional[Dict] = None) -> int:
@@ -75,11 +90,12 @@ class EmbeddingManager:
         Returns:
             int: ID do documento criado
         """
+        if not self.client:
+            raise RuntimeError("Embeddings desabilitados; ative USE_OPENAI e defina OPENAI_API_KEY para adicionar documentos com embedding")
+
         try:
-            # Criar embedding do conteúdo
             embedding = self.create_embedding(content)
-            
-            # Salvar no banco de dados
+
             with self.db_manager.get_session() as session:
                 document = Document(
                     title=title,
@@ -93,10 +109,10 @@ class EmbeddingManager:
                 session.flush()
                 document_id = document.id
                 session.commit()
-            
+
             self.logger.info(f"Documento adicionado: ID {document_id}")
             return document_id
-            
+
         except Exception as e:
             self.logger.error(f"Erro ao adicionar documento: {e}")
             raise
@@ -113,32 +129,30 @@ class EmbeddingManager:
         Returns:
             List[Dict]: Documentos similares ordenados por relevância
         """
+        if not self.client:
+            self.logger.info("Busca semântica ignorada (embeddings desabilitados)")
+            return []
+
         try:
-            # Criar embedding da consulta
             query_embedding = self.create_embedding(query)
-            
-            # Buscar documentos similares
-            # Nota: Esta implementação usa similaridade de cosseno simples
-            # Para produção, considere usar pg_vector ou similar
-            
+
             documents_query = """
             SELECT id, title, content, file_path, meta_data, embedding
             FROM documents
             WHERE is_active = true
             """
             documents = self.db_manager.execute_query(documents_query)
-            
+
             results = []
             for doc in documents:
                 if doc['embedding']:
-                    # Calcular similaridade de cosseno
                     doc_embedding = np.array(doc['embedding'])
                     query_emb = np.array(query_embedding)
-                    
+
                     similarity = np.dot(query_emb, doc_embedding) / (
                         np.linalg.norm(query_emb) * np.linalg.norm(doc_embedding)
                     )
-                    
+
                     if similarity >= threshold:
                         results.append({
                             'id': doc['id'],
@@ -148,15 +162,14 @@ class EmbeddingManager:
                             'metadata': doc['meta_data'],
                             'similarity': float(similarity)
                         })
-            
-            # Ordenar por similaridade
+
             results.sort(key=lambda x: x['similarity'], reverse=True)
-            
+
             self.logger.info(f"Busca semântica: {len(results)} documentos encontrados")
             return results[:limit]
-            
-        except Exception as e:
-            self.logger.error(f"Erro na busca semântica: {e}")
+
+        except Exception:
+            self.logger.error("Erro na busca semântica; embeddings desabilitados (detalhes ocultos).")
             return []
     
     def get_document_by_id(self, document_id: int) -> Optional[Dict[str, Any]]:

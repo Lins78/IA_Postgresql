@@ -1,15 +1,17 @@
-// JavaScript para interface do Mamute
+// JavaScript para interface do Mamute - Agora com suporte a imagens!
 class MamuteClient {
     constructor() {
         this.sessionId = null;
         this.isConnected = false;
         this.messageQueue = [];
+        this.currentImage = null; // Para armazenar imagem anexada
         this.init();
     }
 
     async init() {
         await this.startSession();
         this.setupEventListeners();
+        this.setupImageUpload(); // Configurar upload de imagens
     }
 
     async startSession() {
@@ -25,7 +27,7 @@ class MamuteClient {
             this.isConnected = true;
             
             this.updateStatus('online', 'Conectado');
-            this.addMessage('🐘 Mamute: Olá! Sou o Mamute, sua IA especialista em PostgreSQL. Como posso ajudar você hoje?', 'mamute');
+            this.addMessage('🐘 Mamute: Olá! Sou o Mamute, sua IA especialista em PostgreSQL. 📸 <strong>Agora também posso analisar imagens!</strong> Como posso ajudar você hoje?', 'mamute');
             
             // Habilitar interface
             document.getElementById('messageInput').disabled = false;
@@ -38,12 +40,112 @@ class MamuteClient {
         }
     }
 
-    async sendMessage(message) {
-        if (!message.trim() || !this.sessionId) return;
-
-        // Adicionar mensagem do usuário
-        this.addMessage('👤 Você: ' + message, 'user');
+    setupImageUpload() {
+        const attachButton = document.getElementById('attachButton');
+        const fileInput = document.getElementById('fileInput');
         
+        if (!attachButton || !fileInput) {
+            console.log('Botões de imagem não encontrados, usando interface básica');
+            return;
+        }
+
+        attachButton.addEventListener('click', () => {
+            fileInput.click();
+        });
+        
+        fileInput.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            
+            if (!file.type.startsWith('image/')) {
+                alert('Por favor, selecione apenas arquivos de imagem.');
+                return;
+            }
+            
+            if (file.size > 10 * 1024 * 1024) {
+                alert('Arquivo muito grande. Máximo 10MB.');
+                return;
+            }
+            
+            try {
+                const formData = new FormData();
+                formData.append('file', file);
+                
+                const response = await fetch('/upload-image', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    this.currentImage = data;
+                    this.showImagePreview(data);
+                } else {
+                    const error = await response.json();
+                    alert('Erro ao fazer upload: ' + error.detail);
+                }
+            } catch (error) {
+                alert('Erro ao fazer upload da imagem.');
+                console.error('Erro no upload:', error);
+            }
+        });
+    }
+
+    showImagePreview(imageData) {
+        const attachmentArea = document.getElementById('attachmentArea');
+        const imagePreview = document.getElementById('imagePreview');
+        
+        if (!attachmentArea || !imagePreview) return;
+        
+        imagePreview.innerHTML = `
+            <div class="image-preview-container">
+                <img src="data:${imageData.content_type};base64,${imageData.base64_data}" class="image-preview">
+                <button type="button" class="remove-image" onclick="window.mamuteClient?.removeImage()">&times;</button>
+            </div>
+            <div class="file-info">📸 ${imageData.original_name} (${Math.round(imageData.size/1024)}KB)</div>
+        `;
+        
+        attachmentArea.style.display = 'block';
+    }
+
+    removeImage() {
+        this.currentImage = null;
+        const attachmentArea = document.getElementById('attachmentArea');
+        const imagePreview = document.getElementById('imagePreview');
+        const fileInput = document.getElementById('fileInput');
+        
+        if (attachmentArea) attachmentArea.style.display = 'none';
+        if (imagePreview) imagePreview.innerHTML = '';
+        if (fileInput) fileInput.value = '';
+    }
+
+    async sendMessage(message) {
+        if (!message.trim() && !this.currentImage) return;
+        if (!this.sessionId) return;
+
+        // Preparar dados da mensagem
+        const messageData = {
+            message: message || '📸 Imagem enviada',
+            session_id: this.sessionId,
+            use_context: true
+        };
+
+        // Adicionar dados da imagem se houver
+        if (this.currentImage) {
+            messageData.image_data = this.currentImage.base64_data;
+            messageData.image_filename = this.currentImage.filename;
+        }
+
+        // Adicionar mensagem do usuário (com imagem se houver)
+        let userMessage = '👤 Você: ' + (message || '📸 Imagem enviada');
+        if (this.currentImage) {
+            userMessage = `<div><img src="${this.currentImage.url}" style="max-width: 300px; max-height: 200px; border-radius: 8px; margin-bottom: 10px; border: 2px solid #007bff;"><br>${userMessage}</div>`;
+        }
+        this.addMessage(userMessage, 'user');
+        
+        // Limpar imagem atual
+        this.removeImage();
+
         // Desabilitar input temporariamente
         const input = document.getElementById('messageInput');
         const button = document.getElementById('sendButton');
@@ -56,11 +158,7 @@ class MamuteClient {
             const response = await fetch('/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    message: message,
-                    session_id: this.sessionId,
-                    use_context: true
-                })
+                body: JSON.stringify(messageData) // Usar messageData que pode conter imagem
             });
 
             if (!response.ok) {
@@ -70,7 +168,11 @@ class MamuteClient {
             const data = await response.json();
             
             // Adicionar resposta do Mamute
-            this.addMessage('🐘 Mamute: ' + data.response, 'mamute');
+            let mamuteResponse = '🐘 Mamute: ' + data.response;
+            if (data.image_processed) {
+                mamuteResponse = '🐘 Mamute 📸: ' + data.response;
+            }
+            this.addMessage(mamuteResponse, 'mamute');
             
             // Mostrar informações do modo proativo se disponível
             if (data.proactive_mode && data.applied_improvements?.length > 0) {
@@ -117,6 +219,21 @@ class MamuteClient {
                 });
             }
             
+            // Mostrar inspeção de banco se disponível
+            if (data.database_inspection) {
+                const di = data.database_inspection;
+                const dbHtml = `
+                    <div class="db-inspection">
+                        <strong>🔎 Informações do Banco</strong><br>
+                        <strong>Bancos (${di.database_count || 0}):</strong> ${di.databases && di.databases.length ? di.databases.join(', ') : 'nenhum'}<br>
+                        <strong>Banco atual:</strong> ${di.current_database || 'N/D'}<br>
+                        <strong>Schemas (${di.schema_count || 0}):</strong> ${di.schemas && di.schemas.length ? di.schemas.join(', ') : 'nenhum'}<br>
+                        <strong>Tabelas (${di.table_count || 0}):</strong> ${di.tables && di.tables.length ? di.tables.join(', ') : 'nenhuma'}
+                    </div>
+                `;
+                this.addMessage(dbHtml, 'system');
+            }
+
         } catch (error) {
             console.error('Erro ao enviar mensagem:', error);
             this.addMessage('❌ Erro: ' + error.message, 'system');

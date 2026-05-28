@@ -10,10 +10,15 @@ import pandas as pd
 import sqlite3
 import psycopg2
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 # Tentar importar mysql.connector, usar fallback se não disponível
+if TYPE_CHECKING:
+    import mysql.connector  # type: ignore
+
+# Import dinâmico para ambientes sem mysql instalado
 try:
-    import mysql.connector
+    import mysql.connector  # type: ignore
     MYSQL_AVAILABLE = True
 except ImportError:
     MYSQL_AVAILABLE = False
@@ -23,7 +28,13 @@ from datetime import datetime
 import xml.etree.ElementTree as ET
 
 # Adicionar o diretório principal ao path
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+ROOT_DIR = Path(__file__).resolve().parent
+SRC_DIR = ROOT_DIR / "src"
+APPS_DIR = SRC_DIR / "apps"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+if str(APPS_DIR) not in sys.path:
+    sys.path.insert(0, str(APPS_DIR))
 
 from src.utils.config import Config
 from src.utils.logger import setup_logger

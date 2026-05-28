@@ -9,7 +9,13 @@ import glob
 from pathlib import Path
 
 # Adicionar o diretório src ao path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+ROOT_DIR = Path(__file__).resolve().parent
+SRC_DIR = ROOT_DIR / 'src'
+APPS_DIR = SRC_DIR / 'apps'
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+if str(APPS_DIR) not in sys.path:
+    sys.path.insert(0, str(APPS_DIR))
 
 from src.utils.config import Config
 from src.utils.logger import setup_logger
@@ -268,7 +274,7 @@ def setup_postgresql():
     # 5. Configurar tabelas
     print("\n5️⃣ Configurando tabelas...")
     try:
-        from main import IAPostgreSQL
+        from src.apps.main import IAPostgreSQL
         ia_system = IAPostgreSQL()
         ia_system.setup_database()
         print("   ✅ Tabelas criadas/verificadas com sucesso")

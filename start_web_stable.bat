@@ -1,16 +1,4 @@
 @echo off
-echo ============================================================
-echo 🐘 INICIANDO MAMUTE WEB - MODO ESTAVEL
-echo ============================================================
-echo ✅ Sistema: Mamute - IA PostgreSQL
-echo ✅ Servidor: FastAPI + Uvicorn  
-echo ✅ URL: http://localhost:8000
-echo ============================================================
+set SCRIPT_DIR=%~dp0scripts\windows
+call %SCRIPT_DIR%\start_web_stable.bat %*
 
-cd /d "c:\Users\carlo\Desktop\Projetos\IA_Postgresql"
-echo 🚀 Iniciando servidor web estável...
-.venv\Scripts\python.exe -m uvicorn web_app:app --host 0.0.0.0 --port 8000
-
-echo.
-echo 🛑 Servidor finalizado
-pause

@@ -22,6 +22,9 @@ class Config:
         
         # Configurações do OpenAI
         self.openai_api_key = os.getenv("OPENAI_API_KEY")
+        self.use_openai = os.getenv("USE_OPENAI", "true").lower() == "true"
+        self.openai_model = os.getenv("OPENAI_MODEL", "gpt-3.5-turbo")
+        self.openai_timeout = float(os.getenv("OPENAI_TIMEOUT", 30))
         
         # Configurações do PostgreSQL
         self.postgres_host = os.getenv("POSTGRES_HOST", "localhost")
@@ -44,6 +47,17 @@ class Config:
         self.log_level = os.getenv("LOG_LEVEL", "INFO")
         self.max_tokens = int(os.getenv("MAX_TOKENS", 4000))
         self.temperature = float(os.getenv("TEMPERATURE", 0.7))
+
+        # Segurança / API
+        self.api_key = os.getenv("API_KEY")
+
+        # CORS
+        allowed_origins_env = os.getenv(
+            "ALLOWED_ORIGINS",
+            "http://localhost:8002,http://127.0.0.1:8002"
+        )
+        self.allowed_origins = [o.strip() for o in allowed_origins_env.split(',') if o.strip()]
+        self.allow_cors_credentials = os.getenv("ALLOW_CORS_CREDENTIALS", "false").lower() == "true"
     
     def validate(self, check_openai: bool = True) -> bool:
         """
@@ -61,8 +75,8 @@ class Config:
         if not self.database_url:
             required_configs.append("DATABASE_URL ou credenciais do PostgreSQL")
         
-        # Verificar OpenAI apenas se solicitado
-        if check_openai and not self.openai_api_key:
+        # Verificar OpenAI apenas se solicitado e habilitado
+        if check_openai and self.use_openai and not self.openai_api_key:
             required_configs.append("OPENAI_API_KEY")
         
         if required_configs:

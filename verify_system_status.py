@@ -9,7 +9,13 @@ from pathlib import Path
 import asyncio
 
 # Adicionar o diretório src ao path
-sys.path.insert(0, str(Path(__file__).parent / 'src'))
+ROOT_DIR = Path(__file__).resolve().parent
+SRC_DIR = ROOT_DIR / 'src'
+APPS_DIR = SRC_DIR / 'apps'
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+if str(APPS_DIR) not in sys.path:
+    sys.path.insert(0, str(APPS_DIR))
 
 from src.utils.logger import setup_logger
 
@@ -63,7 +69,7 @@ def test_imports():
         return False
     
     try:
-        from mamute_advanced_system import MamuteAdvancedSystem
+        from src.apps.mamute_advanced_system import MamuteAdvancedSystem
         print("✅ MamuteAdvancedSystem - IMPORTADO")
     except Exception as e:
         print(f"❌ MamuteAdvancedSystem - ERRO: {e}")
@@ -86,7 +92,7 @@ async def quick_system_test():
         from notification_system import NotificationSystem
         from performance_analyzer import PerformanceAnalyzer
         from report_generator import ReportGenerator
-        from mamute_advanced_system import MamuteAdvancedSystem
+        from src.apps.mamute_advanced_system import MamuteAdvancedSystem
         
         # Teste dashboard
         dashboard = AdminDashboard()

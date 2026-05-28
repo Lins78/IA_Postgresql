@@ -8,12 +8,17 @@ Expansão da Biblioteca de Conhecimento do Mamute
 import sys
 import os
 import json
-import requests
-from datetime import datetime, timedelta
-import time
+from datetime import datetime
+from pathlib import Path
 
 # Adicionar src ao path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+ROOT_DIR = Path(__file__).resolve().parent
+SRC_DIR = ROOT_DIR / "src"
+APPS_DIR = SRC_DIR / "apps"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+if str(APPS_DIR) not in sys.path:
+    sys.path.insert(0, str(APPS_DIR))
 
 from src.database.connection import DatabaseManager
 from src.utils.config import Config
@@ -400,7 +405,7 @@ RETURNING id, data_pedido;
 
 -- Insert com dados JSON
 INSERT INTO produtos (nome, especificacoes) 
-VALUES ('Smartphone', '{\"marca\": \"Samsung\", \"modelo\": \"Galaxy\", \"cor\": \"preto\"}');
+VALUES ('Smartphone', '{{\"marca\": \"Samsung\", \"modelo\": \"Galaxy\", \"cor\": \"preto\"}}');
 ```
 
 ### 3.2 Atualização de Dados
@@ -411,7 +416,7 @@ UPDATE clientes SET telefone = '11999888777' WHERE id = 1;
 -- Update com múltiplos campos
 UPDATE produtos 
 SET preco = preco * 1.1, 
-    especificacoes = especificacoes || '{\"desconto\": false}'
+    especificacoes = especificacoes || '{{\"desconto\": false}}'
 WHERE categoria_id = 1;
 
 -- Update com JOIN
@@ -861,27 +866,270 @@ SELECT client_addr, state, sync_state FROM pg_stat_replication;
     
     return doc_content
 
-def adicionar_documento(db_manager, title, content, meta_data):
-    """Adiciona um documento à base de conhecimento"""
+
+def get_interacoes_ias():
+    """Gera guia de colaboração com outras IAs"""
+
+    data_atual = datetime.now().strftime("%d/%m/%Y")
+
+    interacoes_content = f"""
+# Guia de Interação com Outras IAs 🤖
+
+*Atualizado em: {data_atual}*
+
+## Por que usar múltiplas IAs?
+- Complementar especialidades (código, texto, planejamento, imagens)
+- Reduzir viés de um único modelo
+- Acelerar pesquisa e validação cruzada
+
+## Modelos e Forças
+- **ChatGPT/GPT**: raciocínio geral, código, testes rápidos
+- **Claude**: síntese longa, revisão de texto, checagem de coerência
+- **Gemini**: pesquisa, respostas multimodais, insights de contexto
+- **Mistral/LLaMA**: alternativo leve, útil para validação cruzada
+
+## Padrão de Orquestração (Delegar → Checar → Consolidar)
+1) **Delegar**: enviar subtarefas claras para cada IA
+2) **Checar**: pedir verificação entre si (cross-review)
+3) **Consolidar**: escolher ou mesclar a melhor resposta
+
+### Exemplo de Prompt de Delegação
+```text
+Você é responsável por {{tarefa}}. Responda em formato bullet, curto.
+- Contexto: {{contexto_do_projeto}}
+- Entradas: {{entradas}}
+- Saídas esperadas: {{saidas}}
+- Restrições: {{regras}}
+```
+
+### Exemplo de Cross-Review
+```text
+Revise a resposta abaixo procurando erros, omissões e riscos.
+Devolva: 1) 3 problemas prioritários, 2) correções propostas.
+Resposta a revisar: {{resposta_modelo_A}}
+```
+
+### Exemplo de Consolidação
+```text
+Combine as duas respostas em uma versão final.
+- Resposta A: {{resp_A}}
+- Resposta B: {{resp_B}}
+Priorize: precisão > brevidade > estilo.
+```
+
+## Dicas de Segurança e Controle
+- Registrar origem: salvar qual modelo gerou cada trecho
+- Evitar dados sensíveis em prompts; use placeholders
+- Limitar ações críticas a revisões humanas
+- Checar consistência factual com fontes
+
+## Integração com o Mamute
+- Use `meta_data` para rastrear modelo e data da geração
+- Armazene variantes de resposta para A/B testing
+- Gere testes unitários a partir das sugestões das IAs
+- Peça exemplos SQL + explicação + alternativa otimizada
+
+## Sugestões de Prompts Rápidos
+- "Dê 3 abordagens diferentes para otimizar esta query: ..."
+- "Revise este esquema e sugira 2 índices (diga por quê)."
+- "Proponha testes de regressão para este ajuste de performance."
+- "Crie uma resposta curta para usuário final e outra técnica para dev."
+
+*Colaboração inteligente = respostas mais robustas. Use as IAs como pares que se revisam.*
+"""
+
+    return interacoes_content
+
+
+def get_crud_assistente_seguro():
+    """Gera guia para execução assistida de CRUD com validação e confirmação do cliente."""
+
+    data_atual = datetime.now().strftime("%d/%m/%Y")
+
+    crud_content = f"""
+# Assistente de CRUD Seguro 🛡️
+
+*Atualizado em: {data_atual}*
+
+## Objetivo
+Executar operações CRUD (Create, Read, Update, Delete) com segurança: analisar, diagnosticar, sugerir e só aplicar após confirmação do cliente.
+
+## Fluxo Operacional
+1) **Analisar**: ler a requisição do cliente, identificar tabela/colunas/chaves; validar impacto.
+2) **Diagnosticar**: checar pré-condições (existência de tabela/colunas, tipos, FKs, índices relevantes).
+3) **Sugerir**: propor comando SQL e plano de rollback; pedir confirmação explícita.
+4) **Aplicar** (apenas se confirmado): executar em transação e retornar resumo (linhas afetadas, tempo, observações).
+5) **Registrar**: logar comando, parâmetros e resultado para auditoria.
+
+## Checklist Antes de Executar
+- Tabela existe? Colunas informadas existem? Tipos compatíveis?
+- Há PK/FK afetando a operação? Há gatilhos relevantes?
+- WHERE está presente em UPDATE/DELETE? Evitar full-table sem intenção.
+- Necessário backup ou copy para tabela _backup?
+
+## Padrões de Confirmação
+- "Confirme para executar" → só prosseguir após resposta afirmativa.
+- Sem confirmação → responder com o plano e aguardar ok.
+
+## Modelos de Resposta
+- **Proposta**: "Plano CRUD: UPDATE tabela X SET ... WHERE ...; rollback: BEGIN; ... ROLLBACK. Confirmar execução?"
+- **Após Execução**: "Executado: UPDATE ...; linhas afetadas: N; duração: T; observações: ...; rollback não necessário/feito backup em tabela Y."
+
+## Boas Práticas de Execução
+- Usar transação (`BEGIN; ... COMMIT;`), e `ROLLBACK` em erro.
+- Limitar UPDATE/DELETE com WHERE e, se possível, LIMIT + ORDER BY.
+- Para DELETE massivo, preferir soft delete (coluna `ativo`/`deleted_at`).
+- Para INSERT, validar nulos obrigatórios e chaves únicas antes.
+- Para SELECT diagnóstico, retornar amostra (`LIMIT 10`) para revisão rápida.
+
+## Exemplos
+### Atualizar status com segurança
+```
+BEGIN;
+UPDATE pedidos SET status = 'processando' 
+WHERE status = 'pendente' AND data_pedido >= CURRENT_DATE - INTERVAL '2 days';
+-- Revisar linhas afetadas
+ROLLBACK; -- usar se cliente não confirmar COMMIT
+```
+
+### Soft delete
+```
+BEGIN;
+UPDATE clientes SET ativo = false, updated_at = NOW()
+WHERE id = 123;
+COMMIT;
+```
+
+### Inserção validada
+```
+-- Pré-checagem de unicidade
+SELECT 1 FROM usuarios WHERE email = :email LIMIT 1;
+
+BEGIN;
+INSERT INTO usuarios (nome, email, criado_em)
+VALUES (:nome, :email, NOW());
+COMMIT;
+```
+
+## Logs e Auditoria
+- Registrar comando, parâmetros, executor, timestamp e linhas afetadas.
+- Em ambientes críticos, salvar backup (INSERT INTO tabela_backup SELECT * FROM tabela WHERE ...). 
+
+**Regra de ouro**: Sem confirmação clara do cliente → não execute. Sempre ofereça plano + rollback. 
+"""
+
+    return crud_content
+
+
+def ensure_documents_schema(db_manager):
+    """Garante colunas e índice mínimos na tabela documents, compatível com versões antigas do PostgreSQL."""
+
+    columns_available = set()
+
+    # Descobrir colunas
     try:
-        # Verificar se já existe
-        existing = db_manager.execute_query(
-            "SELECT id FROM documents WHERE title = %s", (title,)
+        col_rows = db_manager.execute_query(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = 'documents'
+            """
         )
-        
-        if existing and len(existing) > 0:
-            print(f"📝 Atualizando documento: {title}")
-            result = db_manager.execute_query(
-                "UPDATE documents SET content = %s, meta_data = %s WHERE title = %s",
-                (content, json.dumps(meta_data), title)
+        columns_available = {row['column_name'] for row in col_rows}
+    except Exception as e:
+        print(f"⚠️ Aviso: Não foi possível listar colunas de documents: {e}")
+
+    # Garantir meta_data se não existir
+    if 'meta_data' not in columns_available:
+        try:
+            db_manager.execute_command("ALTER TABLE documents ADD COLUMN meta_data JSONB")
+            columns_available.add('meta_data')
+            print("✅ Coluna meta_data criada em documents")
+        except Exception as e:
+            print(f"⚠️ Aviso: Não foi possível criar meta_data em documents: {e}")
+
+    # Garantir índice único em title
+    try:
+        idx_rows = db_manager.execute_query(
+            """
+            SELECT 1 FROM pg_indexes 
+            WHERE tablename = 'documents' AND indexname = 'documents_title_uq'
+            """
+        )
+        if not idx_rows:
+            db_manager.execute_command("CREATE UNIQUE INDEX documents_title_uq ON documents(title)")
+            print("✅ Índice único documents_title_uq criado")
+    except Exception as e:
+        print(f"⚠️ Aviso: Não foi possível garantir índice em documents.title: {e}")
+
+    return columns_available
+
+def adicionar_documento(db_manager, title, content, meta_data, columns_available):
+    """Adiciona ou atualiza um documento na base de conhecimento, com fallback por schema."""
+    try:
+        print(f"➡️ Gravando documento: {title}")
+
+        has_meta = "meta_data" in columns_available
+        has_category = "category" in columns_available
+
+        if has_meta:
+            params_update = (content, json.dumps(meta_data), title)
+            updated = db_manager.execute_command(
+                """
+                UPDATE documents
+                SET content = %s,
+                    meta_data = %s
+                WHERE title = %s
+                """,
+                params_update
             )
+
+            if updated == 0:
+                db_manager.execute_command(
+                    """
+                    INSERT INTO documents (title, content, meta_data)
+                    VALUES (%s, %s, %s)
+                    """,
+                    (title, content, json.dumps(meta_data))
+                )
         else:
-            print(f"➕ Adicionando documento: {title}")
-            result = db_manager.execute_query(
-                "INSERT INTO documents (title, content, meta_data) VALUES (%s, %s, %s)",
-                (title, content, json.dumps(meta_data))
-            )
-        
+            # Fallback: usar apenas colunas existentes; se houver category, preenche a partir do meta_data
+            category_value = meta_data.get("categoria") if has_category else None
+            if has_category:
+                updated = db_manager.execute_command(
+                    """
+                    UPDATE documents
+                    SET content = %s,
+                        category = %s
+                    WHERE title = %s
+                    """,
+                    (content, category_value, title)
+                )
+                if updated == 0:
+                    db_manager.execute_command(
+                        """
+                        INSERT INTO documents (title, content, category)
+                        VALUES (%s, %s, %s)
+                        """,
+                        (title, content, category_value)
+                    )
+            else:
+                updated = db_manager.execute_command(
+                    """
+                    UPDATE documents
+                    SET content = %s
+                    WHERE title = %s
+                    """,
+                    (content, title)
+                )
+                if updated == 0:
+                    db_manager.execute_command(
+                        """
+                        INSERT INTO documents (title, content)
+                        VALUES (%s, %s)
+                        """,
+                        (title, content)
+                    )
         return True
     except Exception as e:
         print(f"❌ Erro ao adicionar documento {title}: {e}")
@@ -895,8 +1143,11 @@ def main():
     print("  • Saudações diárias contextuais")
     print("  • Previsão do tempo para cidades brasileiras")
     print("  • Documentação oficial PostgreSQL")
+    print("  • Guia de interação com outras IAs")
+    print("  • Assistente de CRUD seguro")
     print()
     
+    db_manager = None
     try:
         # Inicializar sistema
         config = Config(".env")
@@ -905,6 +1156,8 @@ def main():
         if not db_manager.test_connection():
             print("❌ Erro: Não foi possível conectar ao PostgreSQL")
             return False
+
+        columns_available = ensure_documents_schema(db_manager)
         
         documentos_adicionados = 0
         
@@ -920,7 +1173,8 @@ def main():
                 "tipo": "interacao",
                 "data_criacao": datetime.now().isoformat(),
                 "funcionalidade": "saudacoes_contextuais"
-            }
+            },
+            columns_available
         ):
             documentos_adicionados += 1
         
@@ -937,7 +1191,8 @@ def main():
                 "cobertura": "brasil",
                 "data_criacao": datetime.now().isoformat(),
                 "funcionalidade": "previsao_meteorologica"
-            }
+            },
+            columns_available
         ):
             documentos_adicionados += 1
         
@@ -954,7 +1209,8 @@ def main():
                 "versao": "16.x",
                 "data_criacao": datetime.now().isoformat(),
                 "funcionalidade": "referencia_tecnica"
-            }
+            },
+            columns_available
         ):
             documentos_adicionados += 1
         
@@ -1006,7 +1262,8 @@ CREATE TABLE dados_climaticos (
                 "categoria": "comandos",
                 "tipo": "referencia",
                 "funcionalidade": "clima_interacao"
-            }
+            },
+            columns_available
         ):
             documentos_adicionados += 1
         
@@ -1067,7 +1324,44 @@ CREATE TABLE dados_climaticos (
                 "categoria": "personalidade",
                 "tipo": "comportamento",
                 "funcionalidade": "interacao_inteligente"
-            }
+            },
+            columns_available
+        ):
+            documentos_adicionados += 1
+
+        # 6. Guia de Interação com Outras IAs
+        print("🤝 Adicionando guia de interação com outras IAs...")
+        interacoes_ias = get_interacoes_ias()
+        if adicionar_documento(
+            db_manager,
+            "Guia de Interação com Outras IAs",
+            interacoes_ias,
+            {
+                "categoria": "ia",
+                "tipo": "guia",
+                "foco": "colaboracao_multi_modelos",
+                "data_criacao": datetime.now().isoformat(),
+                "funcionalidade": "orquestracao_ia"
+            },
+            columns_available
+        ):
+            documentos_adicionados += 1
+
+        # 7. Assistente de CRUD Seguro
+        print("🛡️ Adicionando assistente de CRUD seguro...")
+        crud_assistente = get_crud_assistente_seguro()
+        if adicionar_documento(
+            db_manager,
+            "Assistente de CRUD Seguro",
+            crud_assistente,
+            {
+                "categoria": "crud",
+                "tipo": "guia",
+                "foco": "execucao_crud_segura",
+                "data_criacao": datetime.now().isoformat(),
+                "funcionalidade": "crud_assistido_confirmacao"
+            },
+            columns_available
         ):
             documentos_adicionados += 1
         
@@ -1088,6 +1382,8 @@ CREATE TABLE dados_climaticos (
         print("  ✅ Documentação completa PostgreSQL 16.x")
         print("  ✅ Comandos de interação com clima")
         print("  ✅ Personalidade expandida e motivacional")
+        print("  ✅ Guia de colaboração com outras IAs")
+        print("  ✅ Assistente de CRUD seguro e confirmável")
         print()
         print("🚀 Reinicie o servidor web para ativar as novas funcionalidades!")
         print("   Comando: .venv\\Scripts\\python.exe start_web.py")
@@ -1097,6 +1393,12 @@ CREATE TABLE dados_climaticos (
     except Exception as e:
         print(f"❌ Erro durante expansão: {e}")
         return False
+    finally:
+        if db_manager:
+            try:
+                db_manager.close()
+            except Exception:
+                pass
 
 if __name__ == "__main__":
     main()

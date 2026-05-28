@@ -2,27 +2,39 @@
 Sistema de Notificações do Mamute
 Notificações em tempo real via WebSocket, email e logs
 """
-import os
-import sys
 import asyncio
-import smtplib
+import inspect
 import json
-from datetime import datetime, timedelta
-from email.mime.text import MIMEText
+import os
+import smtplib
+import sys
+from dataclasses import dataclass, field
+from datetime import datetime
 from email.mime.multipart import MIMEMultipart
-from typing import Dict, List, Optional, Any, Callable
+from email.mime.text import MIMEText
 from enum import Enum
-from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
 import websockets
-from threading import Thread
-import time
 
 # Adicionar o diretório principal ao path
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+ROOT_DIR = Path(__file__).resolve().parent
+SRC_DIR = ROOT_DIR / "src"
+APPS_DIR = SRC_DIR / "apps"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+if str(APPS_DIR) not in sys.path:
+    sys.path.insert(0, str(APPS_DIR))
 
 from src.utils.config import Config
 from src.utils.logger import setup_logger
 from src.database.connection import DatabaseManager
+
+
+def _empty_metadata() -> Dict[str, Any]:
+    return {}
+
 
 class NotificationLevel(Enum):
     """Níveis de notificação"""
@@ -49,27 +61,21 @@ class Notification:
     level: NotificationLevel
     timestamp: datetime
     source: str = "Mamute"
-    channels: List[NotificationChannel] = None
-    metadata: Dict[str, Any] = None
+    channels: List[NotificationChannel] = field(default_factory=lambda: [NotificationChannel.CONSOLE, NotificationChannel.LOG])
+    metadata: Dict[str, Any] = field(default_factory=_empty_metadata)
     read: bool = False
-    
-    def __post_init__(self):
-        if self.channels is None:
-            self.channels = [NotificationChannel.CONSOLE, NotificationChannel.LOG]
-        if self.metadata is None:
-            self.metadata = {}
 
 class NotificationSystem:
     """Sistema completo de notificações do Mamute"""
-    
+
     def __init__(self, config_file: str = ".env"):
         """Inicializar sistema de notificações"""
         self.config = Config(config_file)
         self.logger = setup_logger("NotificationSystem")
         self.db_manager = DatabaseManager(self.config)
-        
+
         # Configurações de email (opcionais)
-        self.email_config = {
+        self.email_config: Any = {
             'smtp_server': os.getenv('SMTP_SERVER', 'smtp.gmail.com'),
             'smtp_port': int(os.getenv('SMTP_PORT', 587)),
             'email_user': os.getenv('EMAIL_USER'),
@@ -77,14 +83,14 @@ class NotificationSystem:
             'email_from': os.getenv('EMAIL_FROM'),
             'email_to': os.getenv('EMAIL_TO', '').split(',') if os.getenv('EMAIL_TO') else []
         }
-        
+
         # WebSocket connections
-        self.websocket_connections = set()
-        self.websocket_server = None
-        
+        self.websocket_connections: Any = set()
+        self.websocket_server: Any = None
+
         # Subscribers para notificações programáticas
-        self.subscribers: Dict[str, List[Callable]] = {}
-        
+        self.subscribers: Any = {}
+
         # Cache de notificações recentes
         self.recent_notifications: List[Notification] = []
         self.max_recent_notifications = 100
@@ -131,11 +137,7 @@ class NotificationSystem:
         """Enviar notificação através de todos os canais especificados"""
         try:
             success_count = 0
-            
-            # Adicionar timestamp se não fornecido
-            if not hasattr(notification, 'timestamp') or notification.timestamp is None:
-                notification.timestamp = datetime.now()
-            
+
             # Enviar para cada canal especificado
             for channel in notification.channels:
                 try:
@@ -234,8 +236,8 @@ class NotificationSystem:
         """Enviar notificação via WebSocket para clientes conectados"""
         if not self.websocket_connections:
             return
-        
-        notification_data = {
+
+        notification_data: Any = {
             'id': notification.id,
             'title': notification.title,
             'message': notification.message,
@@ -244,25 +246,20 @@ class NotificationSystem:
             'source': notification.source,
             'metadata': notification.metadata
         }
-        
+
         message = json.dumps({
             'type': 'notification',
             'data': notification_data
         })
-        
+
         # Enviar para todas as conexões ativas
-        disconnected_connections = set()
-        
         for websocket in self.websocket_connections.copy():
             try:
                 await websocket.send(message)
             except Exception as e:
                 self.logger.debug(f"Conexão WebSocket perdida: {e}")
-                disconnected_connections.add(websocket)
-        
-        # Remover conexões desconectadas
-        self.websocket_connections -= disconnected_connections
-    
+                self.websocket_connections.discard(websocket)
+
     async def _send_to_email(self, notification: Notification):
         """Enviar notificação por email"""
         try:
@@ -317,31 +314,32 @@ Este é um email automático do sistema Mamute.
             if event_type == 'all' or event_type == notification.level.value:
                 for callback in callbacks:
                     try:
-                        if asyncio.iscoroutinefunction(callback):
-                            await callback(notification)
-                        else:
-                            callback(notification)
+                        result = callback(notification)
+                        if inspect.isawaitable(result):
+                            await result
                     except Exception as e:
                         self.logger.warning(f"Erro em subscriber callback: {e}")
-    
-    def subscribe(self, event_type: str, callback: Callable):
+
+    def subscribe(self, event_type: str, callback: Any):
         """Inscrever callback para receber notificações"""
         if event_type not in self.subscribers:
             self.subscribers[event_type] = []
-        
+
         self.subscribers[event_type].append(callback)
         self.logger.debug(f"Subscriber adicionado para {event_type}")
-    
-    def create_notification(self, 
-                          title: str, 
-                          message: str, 
-                          level: NotificationLevel = NotificationLevel.INFO,
-                          channels: List[NotificationChannel] = None,
-                          source: str = "Mamute",
-                          metadata: Dict[str, Any] = None) -> Notification:
+
+    def create_notification(
+        self,
+        title: str,
+        message: str,
+        level: NotificationLevel = NotificationLevel.INFO,
+        channels: Optional[List[NotificationChannel]] = None,
+        source: str = "Mamute",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Notification:
         """Criar uma nova notificação"""
         notification_id = f"{source}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{hash(title + message) % 10000}"
-        
+
         return Notification(
             id=notification_id,
             title=title,
@@ -352,33 +350,33 @@ Este é um email automático do sistema Mamute.
             channels=channels or [NotificationChannel.CONSOLE, NotificationChannel.LOG],
             metadata=metadata or {}
         )
-    
-    async def notify_info(self, title: str, message: str, **kwargs):
+
+    async def notify_info(self, title: str, message: str, **kwargs: Any):
         """Enviar notificação de informação"""
         notification = self.create_notification(title, message, NotificationLevel.INFO, **kwargs)
         return await self.send_notification(notification)
-    
-    async def notify_warning(self, title: str, message: str, **kwargs):
+
+    async def notify_warning(self, title: str, message: str, **kwargs: Any):
         """Enviar notificação de aviso"""
         notification = self.create_notification(title, message, NotificationLevel.WARNING, **kwargs)
         return await self.send_notification(notification)
-    
-    async def notify_error(self, title: str, message: str, **kwargs):
+
+    async def notify_error(self, title: str, message: str, **kwargs: Any):
         """Enviar notificação de erro"""
         notification = self.create_notification(title, message, NotificationLevel.ERROR, **kwargs)
         return await self.send_notification(notification)
-    
-    async def notify_critical(self, title: str, message: str, **kwargs):
+
+    async def notify_critical(self, title: str, message: str, **kwargs: Any):
         """Enviar notificação crítica"""
         notification = self.create_notification(title, message, NotificationLevel.CRITICAL, **kwargs)
         return await self.send_notification(notification)
-    
-    async def notify_success(self, title: str, message: str, **kwargs):
+
+    async def notify_success(self, title: str, message: str, **kwargs: Any):
         """Enviar notificação de sucesso"""
         notification = self.create_notification(title, message, NotificationLevel.SUCCESS, **kwargs)
         return await self.send_notification(notification)
-    
-    def get_recent_notifications(self, limit: int = 20, level: NotificationLevel = None) -> List[Dict[str, Any]]:
+
+    def get_recent_notifications(self, limit: int = 20, level: Optional[NotificationLevel] = None) -> List[Dict[str, Any]]:
         """Obter notificações recentes"""
         notifications = self.recent_notifications
         
@@ -401,36 +399,38 @@ Este é um email automático do sistema Mamute.
             for n in notifications[:limit]
         ]
     
-    def get_notifications_from_db(self, 
-                                 limit: int = 50, 
-                                 level: str = None,
-                                 read: bool = None,
-                                 hours_ago: int = 24) -> List[Dict[str, Any]]:
+    def get_notifications_from_db(
+        self,
+        limit: int = 50,
+        level: Optional[str] = None,
+        read: Optional[bool] = None,
+        hours_ago: int = 24,
+    ) -> List[Dict[str, Any]]:
         """Obter notificações do banco de dados"""
         try:
             conditions = ["created_at >= NOW() - INTERVAL '%s hours'" % hours_ago]
-            params = {}
-            
+            params: Dict[str, Any] = {}
+
             if level:
                 conditions.append("level = %(level)s")
                 params['level'] = level
-            
+
             if read is not None:
                 conditions.append("read = %(read)s")
                 params['read'] = read
-            
+
             where_clause = "WHERE " + " AND ".join(conditions)
-            
+
             query = f"""
                 SELECT id, title, message, level, source, metadata, read, created_at
-                FROM notifications 
+                FROM notifications
                 {where_clause}
-                ORDER BY created_at DESC 
+                ORDER BY created_at DESC
                 LIMIT {limit}
             """
-            
+
             notifications = self.db_manager.execute_query(query, params) or []
-            
+
             return [
                 {
                     'id': n['id'],
@@ -444,38 +444,39 @@ Este é um email automático do sistema Mamute.
                 }
                 for n in notifications
             ]
-            
+
         except Exception as e:
             self.logger.error(f"Erro ao buscar notificações do banco: {e}")
             return []
-    
+
     async def mark_as_read(self, notification_id: str) -> bool:
         """Marcar notificação como lida"""
         try:
-            result = self.db_manager.execute_query(
+            self.db_manager.execute_query(
                 "UPDATE notifications SET read = TRUE WHERE id = %(id)s",
                 {'id': notification_id}
             )
-            
+
             # Também atualizar no cache
             for notification in self.recent_notifications:
                 if notification.id == notification_id:
                     notification.read = True
                     break
-            
+
             return True
-            
+
         except Exception as e:
             self.logger.error(f"Erro ao marcar notificação como lida: {e}")
             return False
     
     async def start_websocket_server(self, host: str = "localhost", port: int = 8765):
         """Iniciar servidor WebSocket para notificações em tempo real"""
-        async def handle_websocket(websocket, path):
+
+        async def handle_websocket(websocket: Any, path: Any):
             """Handler para conexões WebSocket"""
             self.websocket_connections.add(websocket)
             self.logger.info(f"Nova conexão WebSocket: {websocket.remote_address}")
-            
+
             try:
                 # Enviar notificações recentes ao conectar
                 recent_notifications = self.get_recent_notifications(10)
@@ -483,14 +484,14 @@ Este é um email automático do sistema Mamute.
                     'type': 'initial_notifications',
                     'data': recent_notifications
                 }))
-                
+
                 # Manter conexão viva
                 await websocket.wait_closed()
             except Exception as e:
                 self.logger.debug(f"Conexão WebSocket encerrada: {e}")
             finally:
                 self.websocket_connections.discard(websocket)
-        
+
         try:
             self.websocket_server = await websockets.serve(handle_websocket, host, port)
             self.logger.info(f"Servidor WebSocket de notificações iniciado em ws://{host}:{port}")
@@ -500,23 +501,23 @@ Este é um email automático do sistema Mamute.
 # Instância global do sistema de notificações
 notification_system = NotificationSystem()
 
-async def notify_info(title: str, message: str, **kwargs):
+async def notify_info(title: str, message: str, **kwargs: Any):
     """Função de conveniência para notificações de info"""
     return await notification_system.notify_info(title, message, **kwargs)
 
-async def notify_warning(title: str, message: str, **kwargs):
+async def notify_warning(title: str, message: str, **kwargs: Any):
     """Função de conveniência para notificações de aviso"""
     return await notification_system.notify_warning(title, message, **kwargs)
 
-async def notify_error(title: str, message: str, **kwargs):
+async def notify_error(title: str, message: str, **kwargs: Any):
     """Função de conveniência para notificações de erro"""
     return await notification_system.notify_error(title, message, **kwargs)
 
-async def notify_critical(title: str, message: str, **kwargs):
+async def notify_critical(title: str, message: str, **kwargs: Any):
     """Função de conveniência para notificações críticas"""
     return await notification_system.notify_critical(title, message, **kwargs)
 
-async def notify_success(title: str, message: str, **kwargs):
+async def notify_success(title: str, message: str, **kwargs: Any):
     """Função de conveniência para notificações de sucesso"""
     return await notification_system.notify_success(title, message, **kwargs)
 

@@ -268,9 +268,9 @@ class IntelligentSearchEngine:
             ])
             
             query = f"""
-                SELECT id, title, content, source, category, created_at, metadata
+                SELECT id, title, content, meta_data, created_at
                 FROM documents 
-                WHERE {keywords_condition}
+                WHERE is_active = true AND ({keywords_condition})
                 ORDER BY created_at DESC
                 LIMIT %s
             """
@@ -286,6 +286,10 @@ class IntelligentSearchEngine:
             for doc in docs:
                 # Calcular similarity baseada na frequência das palavras
                 similarity = self._calculate_keyword_similarity(doc['content'], keywords)
+
+                meta = doc.get('meta_data') or {}
+                if not isinstance(meta, dict):
+                    meta = {}
                 
                 result = SearchResult(
                     id=str(doc['id']),
@@ -293,10 +297,10 @@ class IntelligentSearchEngine:
                     content=doc['content'],
                     content_type=ContentType.DOCUMENT,
                     similarity=similarity,
-                    source=doc['source'],
-                    category=doc['category'],
-                    timestamp=doc['created_at'],
-                    metadata=doc.get('metadata', {})
+                    source=meta.get('source'),
+                    category=meta.get('category'),
+                    timestamp=doc.get('created_at'),
+                    metadata=meta
                 )
                 results.append(result)
                 
@@ -315,10 +319,10 @@ class IntelligentSearchEngine:
             ])
             
             query = f"""
-                SELECT id, session_id, user_message, ai_response, timestamp, metadata
+                SELECT id, session_id, user_message, ai_response, created_at
                 FROM conversations 
                 WHERE {keywords_condition}
-                ORDER BY timestamp DESC
+                ORDER BY created_at DESC
                 LIMIT %s
             """
             
@@ -341,8 +345,8 @@ class IntelligentSearchEngine:
                     content_type=ContentType.CONVERSATION,
                     similarity=similarity,
                     source="chat_history",
-                    timestamp=conv['timestamp'],
-                    metadata=conv.get('metadata', {})
+                    timestamp=conv.get('created_at'),
+                    metadata={}
                 )
                 results.append(result)
                 
@@ -357,14 +361,14 @@ class IntelligentSearchEngine:
         
         try:
             keywords_condition = " OR ".join([
-                f"(sql_query ILIKE %s OR result_summary ILIKE %s)" for _ in keywords
+                f"(query_text ILIKE %s OR error_message ILIKE %s)" for _ in keywords
             ])
-            
+
             query = f"""
-                SELECT id, sql_query, result_summary, execution_time, timestamp, metadata
+                SELECT id, query_text, query_type, execution_time, rows_affected, success, error_message, created_at
                 FROM queries 
                 WHERE {keywords_condition}
-                ORDER BY timestamp DESC
+                ORDER BY created_at DESC
                 LIMIT %s
             """
             
@@ -376,18 +380,23 @@ class IntelligentSearchEngine:
             query_logs = self.db_manager.execute_query(query, params)
             
             for log in query_logs:
-                content = f"Query: {log['sql_query']}\\n\\nResultado: {log.get('result_summary', 'N/A')}"
+                content = (
+                    f"Query: {log.get('query_text','')}\n"
+                    f"Tipo: {log.get('query_type','')}\n"
+                    f"Sucesso: {log.get('success')}\n"
+                    f"Erro: {log.get('error_message','')}"
+                )
                 similarity = self._calculate_keyword_similarity(content, keywords)
                 
                 result = SearchResult(
                     id=f"query_{log['id']}",
-                    title=f"Query SQL ({log['execution_time']:.2f}ms)",
+                    title=f"Query SQL ({log.get('execution_time', 0):.2f}ms)",
                     content=content,
                     content_type=ContentType.LOG_ENTRY,
                     similarity=similarity,
                     source="query_logs",
-                    timestamp=log['timestamp'],
-                    metadata=log.get('metadata', {})
+                    timestamp=log.get('created_at'),
+                    metadata={}
                 )
                 results.append(result)
                 
@@ -401,13 +410,19 @@ class IntelligentSearchEngine:
         """Adiciona conteúdo ao índice de busca"""
         try:
             if content_type == ContentType.DOCUMENT:
-                # Adicionar documento
+                # Adicionar documento; armazena source/category dentro de meta_data
+                meta = metadata or {}
+                if source:
+                    meta.setdefault('source', source)
+                if category:
+                    meta.setdefault('category', category)
+
                 self.embedding_manager.add_document(
                     title=title,
                     content=content,
-                    source=source,
-                    category=category,
-                    metadata=metadata or {}
+                    file_path=None,
+                    file_type=None,
+                    metadata=meta
                 )
             else:
                 # Para outros tipos, armazenar em tabelas específicas
@@ -488,20 +503,7 @@ class IntelligentSearchEngine:
     
     def _is_safe_sql_query(self, query: str) -> bool:
         """Verifica se a query SQL é segura (apenas SELECT)"""
-        query_clean = query.strip().upper()
-        
-        # Permitir apenas SELECT
-        if not query_clean.startswith('SELECT'):
-            return False
-            
-        # Verificar palavras proibidas
-        forbidden_words = ['DROP', 'DELETE', 'INSERT', 'UPDATE', 'ALTER', 'CREATE', 'TRUNCATE']
-        
-        for word in forbidden_words:
-            if word in query_clean:
-                return False
-                
-        return True
+        return DatabaseManager.is_safe_select(query)
     
     def _row_to_searchable_text(self, row: Dict) -> str:
         """Converte linha de resultado SQL em texto pesquisável"""
@@ -580,9 +582,9 @@ class IntelligentSearchEngine:
     def _get_query_history_suggestions(self, partial: str, limit: int) -> List[str]:
         """Busca sugestões em histórico de queries"""
         try:
-            query = "SELECT DISTINCT sql_query FROM queries WHERE sql_query ILIKE %s LIMIT %s"
+            query = "SELECT DISTINCT query_text FROM queries WHERE query_text ILIKE %s LIMIT %s"
             results = self.db_manager.execute_query(query, (f"%{partial}%", limit))
-            return [r['sql_query'] for r in results]
+            return [r['query_text'] for r in results]
         except:
             return []
     

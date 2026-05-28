@@ -2,31 +2,62 @@
 API Web FastAPI para o Mamute
 Interface web para navegadores
 """
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, File, UploadFile, Form
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, File, UploadFile, Form, Depends, Header
+from fastapi.concurrency import run_in_threadpool
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, TYPE_CHECKING
 import json
 import uuid
 import os
 import sys
 from datetime import datetime
+from urllib.parse import urlparse
+from pathlib import Path
+import time
+import traceback
 
 # Adicionar o diretório principal ao path
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+ROOT_DIR = Path(__file__).resolve().parent
+SRC_DIR = ROOT_DIR / "src"
+APPS_DIR = SRC_DIR / "apps"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+if str(APPS_DIR) not in sys.path:
+    sys.path.insert(0, str(APPS_DIR))
 
-from main import IAPostgreSQL
+from src.apps.main import IAPostgreSQL
 from src.utils.logger import setup_logger
+from src.utils.config import Config
 from src.utils.metrics import AdvancedMetricsManager
 from src.utils.search import IntelligentSearchEngine, SearchType, SearchFilter, ContentType
+if TYPE_CHECKING:
+    from aplicar_melhorias_automatico import MelhorasBancoDados  # type: ignore
+
+from scripts.python.aplicar_melhorias_automatico import MelhorasBancoDados  # type: ignore 
+
+# Criar diretório para uploads de imagens
+UPLOADS_DIR = "uploads/images"
+os.makedirs(UPLOADS_DIR, exist_ok=True)
+
+# Adicionar imports para imagens
+import base64
+import mimetypes
 
 # Modelos Pydantic para API
 class ChatMessage(BaseModel):
     message: str
     session_id: Optional[str] = None
     use_context: bool = True
+    image_data: Optional[str] = None  # Base64 encoded image
+    image_filename: Optional[str] = None
+
+class ImageUpload(BaseModel):
+    filename: str
+    data: str  # Base64 encoded
+    content_type: str
 
 class DocumentAdd(BaseModel):
     title: str
@@ -54,19 +85,30 @@ class SearchRequest(BaseModel):
 from contextlib import asynccontextmanager
 
 logger = setup_logger("MamuteWeb", "INFO")
+base_config = Config()
 ia_system = None
 metrics_manager = None
 search_engine = None
+melhorias_sistema = None
+db_ready = False
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    global ia_system, metrics_manager, search_engine
+    global ia_system, metrics_manager, search_engine, melhorias_sistema, db_ready
     try:
         ia_system = IAPostgreSQL()
-        ia_system.setup_database()
+        try:
+            ia_system.setup_database()
+            db_ready = True
+            logger.info("🐘 PostgreSQL conectado. Inicializando serviços de dashboard e busca.")
+        except Exception as db_error:
+            db_ready = False
+            logger.warning(f"⚠️ Mamute Web API iniciando em modo degradado: {db_error}")
+
         metrics_manager = AdvancedMetricsManager(ia_system.db_manager, ia_system.config)
         search_engine = IntelligentSearchEngine(ia_system.db_manager, ia_system.embedding_manager, ia_system.config)
+        melhorias_sistema = MelhorasBancoDados()
         logger.info("🐘 Mamute Web API iniciado com sucesso!")
     except Exception as e:
         logger.error(f"Erro ao inicializar Mamute: {e}")
@@ -87,17 +129,187 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Endpoint para métricas e status da IA
+@app.get("/status", response_class=JSONResponse)
+async def get_status():
+    """
+    Retorna métricas de uso, erros e tempo de resposta da IA.
+    """
+    if ia_system and hasattr(ia_system, 'chat_manager'):
+        metrics = ia_system.chat_manager.metrics
+        return {
+            "status": "ok" if db_ready else "degraded",
+            "database_connected": db_ready,
+            "messages": metrics.get('messages', 0),
+            "errors": metrics.get('errors', 0),
+            "avg_response_time": round(sum(metrics.get('response_times', [])) / max(len(metrics.get('response_times', [])), 1), 2)
+        }
+    return {"status": "offline", "database_connected": False}
+
 # Montar arquivos estáticos
 app.mount("/static", StaticFiles(directory="web/static"), name="static")
 
-# Configurar CORS
+@app.get("/api/postgresql/inspection", response_class=JSONResponse)
+async def postgresql_inspection():
+    """Retorna dados de inspeção do PostgreSQL visíveis à IA."""
+    if not ia_system:
+        raise HTTPException(status_code=503, detail="Sistema não inicializado")
+
+    try:
+        inspection = get_database_inspection_data()
+        return inspection
+    except Exception as e:
+        tb = traceback.format_exc()
+        logger.error(f"Erro ao recuperar inspeção do PostgreSQL: {e}\n{tb}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": "Não foi possível recuperar a inspeção do banco de dados",
+                "error": str(e),
+                "trace": tb.splitlines()[-5:],
+            },
+        )
+
+# Configurar CORS com allowlist
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=base_config.allowed_origins,
+    allow_credentials=base_config.allow_cors_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def require_api_key(x_api_key: str = Header(None, alias="X-API-Key")):
+    """Valida a API key quando configurada."""
+    if base_config.api_key:
+        if not x_api_key or x_api_key != base_config.api_key:
+            raise HTTPException(status_code=401, detail="API key inválida ou ausente")
+
+
+def database_is_available() -> bool:
+    """Retorna True quando o PostgreSQL está acessível."""
+    if not ia_system or not hasattr(ia_system, "db_manager"):
+        return False
+
+    try:
+        return bool(ia_system.db_manager.test_connection())
+    except Exception:
+        return False
+
+
+def is_database_inspection_request(message: str) -> bool:
+    """Detecta perguntas sobre bancos, tabelas ou schemas."""
+    if not message:
+        return False
+
+    normalized = message.lower()
+    keywords = [
+        "quantos bancos",
+        "quantos schemas",
+        "quais schemas",
+        "quantas tabelas",
+        "quais tabelas",
+        "schemas existem",
+        "tabelas existem",
+        "bancos existem",
+        "quais bancos",
+        "quais são os bancos",
+        "tabelas existentes",
+        "schemas existentes",
+        "schemas do banco",
+        "banco atual",
+        "bases de dados",
+        "banco de dados",
+        "tabelas e schemas",
+        "mostrar bancos",
+        "mostrar tabelas",
+        "mostrar schemas",
+        "listar schemas",
+        "listar tabelas",
+        "contar schemas",
+        "contar tabelas",
+    ]
+    return any(keyword in normalized for keyword in keywords)
+
+
+def get_database_inspection_data() -> Dict[str, Any]:
+    """Retorna informações estruturadas sobre bancos, schemas e tabelas."""
+    if not ia_system:
+        raise RuntimeError("Sistema não inicializado")
+
+    dm = getattr(ia_system, 'ai_db_manager', None) or ia_system.db_manager
+    inspection_error = None
+    try:
+        dbs = dm.get_available_databases()
+        current_db = dm.current_database or ia_system.config.database_url
+        schemas = dm.get_schemas()
+        tables = dm.get_all_tables()
+    except Exception as e:
+        inspection_error = e
+        logger.warning(f"Falha ao usar AI_DB_MANAGER para inspeção: {e}. Revertendo para gerenciador padrão.")
+        dm = ia_system.db_manager
+        dbs = dm.get_available_databases()
+        current_db = dm.current_database or ia_system.config.database_url
+        schemas = dm.get_schemas()
+        tables = dm.get_all_tables()
+
+    result = {
+        "databases": dbs,
+        "database_count": len(dbs),
+        "current_database": current_db,
+        "schemas": schemas,
+        "schema_count": len(schemas),
+        "tables": tables,
+        "table_count": len(tables),
+    }
+
+    if inspection_error:
+        result["inspection_fallback"] = True
+        result["inspection_error"] = str(inspection_error)
+    return result
+
+
+def build_database_inspection_response() -> str:
+    """Retorna um texto com os bancos, schemas e tabelas do banco atual."""
+    if not ia_system:
+        return "O banco de dados não está disponível no momento."
+
+    try:
+        data = get_database_inspection_data()
+        lines = [
+            f"Há {data['database_count']} banco(s) visível(is): {', '.join(data['databases']) if data['databases'] else 'nenhum'}.",
+            f"Banco atual conectado: {data['current_database']}.",
+            f"Há {data['schema_count']} schema(s): {', '.join(data['schemas']) if data['schemas'] else 'nenhum schema encontrado'}.",
+            f"Há {data['table_count']} tabela(s): {', '.join(data['tables']) if data['tables'] else 'nenhuma tabela encontrada'}.",
+        ]
+        return "\n".join(lines)
+    except Exception as e:
+        logger.error(f"Erro ao montar resposta de inspeção de banco: {e}")
+        return "Não consegui recuperar as informações do banco de dados no momento."
+
+
+def build_degraded_response(response_text: str, session_id: str, response_time: float = 0.0) -> Dict[str, Any]:
+    """Normaliza respostas em modo degradado para o formato esperado pela interface."""
+    return {
+        "response": response_text,
+        "session_id": session_id,
+        "tokens_used": 0,
+        "response_time": response_time,
+        "relevant_documents": [],
+        "mamute_name": ia_system.config.ai_name if ia_system else "Mamute",
+        "personality_mode": False,
+        "proactive_mode": False,
+        "applied_improvements": [],
+        "suggested_improvements": [],
+        "improvement_confidence": 0.0,
+        "has_image": False,
+        "image_processed": False,
+        "auto_improvements": {"aplicado": False, "motivo": "PostgreSQL indisponível"},
+        "database_connected": False,
+        "mode": "degraded",
+    }
+
 
 # Gerenciador de conexões WebSocket
 class ConnectionManager:
@@ -126,6 +338,77 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+# Função para aplicar melhorias automaticamente
+def aplicar_melhorias_automaticamente(mensagem: str, database_name: str = None) -> dict:
+    """Detecta pedidos de melhoria e aplica automaticamente"""
+    if not melhorias_sistema:
+        return {"aplicado": False, "motivo": "Sistema de melhorias não inicializado"}
+    
+    mensagem_lower = mensagem.lower()
+    melhorias_aplicadas = []
+    
+    # Detectar pedidos de aplicação de melhorias
+    if any(keyword in mensagem_lower for keyword in [
+        "aplique as melhorias", "aplicar melhorias", "execute as sugestões",
+        "implemente as melhorias", "corrija os problemas", "otimize o banco",
+        "aplique as sugestões", "execute as correções", "melhore o banco"
+    ]):
+        
+        try:
+            # 1. Aplicar VACUUM ANALYZE
+            if any(keyword in mensagem_lower for keyword in ["vacuum", "limpeza", "otimização", "performance"]):
+                resultado_vacuum = melhorias_sistema.aplicar_vacuum_analyze(database_name)
+                if resultado_vacuum.get("status") == "sucesso":
+                    melhorias_aplicadas.append({
+                        "tipo": "VACUUM ANALYZE",
+                        "status": "✅ Executado com sucesso",
+                        "detalhes": f"Processadas {resultado_vacuum.get('total_tabelas', 0)} tabelas"
+                    })
+                else:
+                    melhorias_aplicadas.append({
+                        "tipo": "VACUUM ANALYZE", 
+                        "status": "❌ Falhou",
+                        "detalhes": resultado_vacuum.get("erro", "Erro desconhecido")
+                    })
+            
+            # 2. Criar backup automático
+            if any(keyword in mensagem_lower for keyword in ["backup", "segurança", "proteção"]):
+                resultado_backup = melhorias_sistema.criar_backup_automatico(database_name)
+                if resultado_backup.get("status") == "sucesso":
+                    melhorias_aplicadas.append({
+                        "tipo": "Backup Automático",
+                        "status": "✅ Criado com sucesso", 
+                        "detalhes": f"Arquivo: {resultado_backup.get('arquivo', 'N/A')}"
+                    })
+                else:
+                    melhorias_aplicadas.append({
+                        "tipo": "Backup Automático",
+                        "status": "❌ Falhou",
+                        "detalhes": resultado_backup.get("erro", "Erro desconhecido")
+                    })
+            
+            # 3. Verificar índices (se implementado)
+            if any(keyword in mensagem_lower for keyword in ["índice", "index", "consultas lentas"]):
+                melhorias_aplicadas.append({
+                    "tipo": "Verificação de Índices",
+                    "status": "⏳ Em desenvolvimento",
+                    "detalhes": "Funcionalidade será implementada em breve"
+                })
+            
+            return {
+                "aplicado": True,
+                "total_melhorias": len(melhorias_aplicadas),
+                "melhorias": melhorias_aplicadas
+            }
+            
+        except Exception as e:
+            return {
+                "aplicado": False,
+                "motivo": f"Erro ao aplicar melhorias: {str(e)}"
+            }
+    
+    return {"aplicado": False, "motivo": "Nenhum pedido de melhoria detectado"}
+
 # Rotas da API
 
 @app.get("/", response_class=HTMLResponse)
@@ -139,6 +422,12 @@ async def home():
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <link rel="stylesheet" href="/static/mamute.css">
+        <script>
+        function mamuteLogout(){
+            if(confirm('Deseja realmente se desconectar?')){ window.location.href='/'; }
+            return false;
+        }
+        </script>
     </head>
     <body>
         <header class="header">
@@ -148,6 +437,7 @@ async def home():
                     <a href="/">Dashboard</a>
                     <a href="/chat">Chat</a>
                     <a href="/docs">API</a>
+                    <a href="#" onclick="return mamuteLogout();">Sair</a>
                 </nav>
             </div>
         </header>
@@ -263,6 +553,32 @@ async def home():
         </main>
 
         <script src="/static/mamute.js"></script>
+        <script>
+            // Função para verificar status do PostgreSQL
+            async function checkPostgreSQLStatus() {
+                try {
+                    const response = await fetch('/api/postgresql/status');
+                    const data = await response.json();
+                    const statusElement = document.getElementById('dbStatus');
+                    
+                    if (data.status === 'connected') {
+                        statusElement.textContent = 'Conectado';
+                        statusElement.className = 'status online';
+                    } else {
+                        statusElement.textContent = 'Desconectado';
+                        statusElement.className = 'status offline';
+                    }
+                } catch (error) {
+                    const statusElement = document.getElementById('dbStatus');
+                    statusElement.textContent = 'Desconectado';
+                    statusElement.className = 'status offline';
+                }
+            }
+            
+            // Verificar status imediatamente e depois a cada 10 segundos
+            checkPostgreSQLStatus();
+            setInterval(checkPostgreSQLStatus, 10000);
+        </script>
         <style>
             .results-table {
                 width: 100%;
@@ -291,26 +607,154 @@ async def home():
     </html>
     """
 
+
+@app.get("/api/postgresql/status")
+async def postgresql_status():
+    """Retorna status simplificado da conexão PostgreSQL."""
+    try:
+        connected = ia_system.db_manager.test_connection() if ia_system and ia_system.db_manager else False
+    except Exception:
+        connected = False
+
+    host = None
+    database = None
+    try:
+        parsed = urlparse(ia_system.config.database_url if ia_system else base_config.database_url)
+        host = parsed.hostname
+        database = parsed.path.lstrip('/') or None
+    except Exception:
+        pass
+
+    return {
+        "status": "connected" if connected else "disconnected",
+        "host": host,
+        "database": database,
+        "timestamp": datetime.utcnow().isoformat() + "Z"
+    }
+
+
+@app.get("/api/postgresql/databases")
+async def postgresql_databases():
+    """Retorna lista de bancos disponíveis e tabelas do banco atual."""
+    try:
+        dbs = ia_system.db_manager.get_available_databases() if ia_system and ia_system.db_manager else []
+    except Exception:
+        dbs = []
+
+    tables = []
+    try:
+        tables = ia_system.db_manager.get_all_tables() if ia_system and ia_system.db_manager else []
+    except Exception:
+        tables = []
+
+    return {
+        "databases": dbs,
+        "current_database": ia_system.db_manager.current_database if ia_system and ia_system.db_manager else None,
+        "tables_in_current_database": tables,
+        "timestamp": datetime.utcnow().isoformat() + "Z"
+    }
+
 @app.get("/chat", response_class=HTMLResponse)
 async def chat_page():
-    """Interface de chat web aprimorada"""
+    """Interface de chat web aprimorada COM SUPORTE A IMAGENS"""
     return """
     <!DOCTYPE html>
     <html lang="pt-br">
     <head>
-        <title>🐘 Chat com Mamute</title>
+        <title>🐘 Chat com Mamute - Agora com Imagens!</title>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <link rel="stylesheet" href="/static/mamute.css">
+        <script>
+        function mamuteLogout(){
+            if(confirm('Deseja realmente se desconectar?')){ window.location.href='/'; }
+            return false;
+        }
+        </script>
+        <style>
+            .chat-input-container { 
+                display: flex; 
+                flex-direction: column; 
+                gap: 10px; 
+                padding: 20px;
+                border-top: 1px solid #e1e5e9;
+                background: #f8f9fa;
+            }
+            .input-row {
+                display: flex;
+                gap: 10px;
+                align-items: flex-end;
+            }
+            .attachment-area {
+                display: none;
+                padding: 10px;
+                background: white;
+                border-radius: 8px;
+                border: 2px dashed #dee2e6;
+            }
+            .image-preview {
+                max-width: 150px;
+                max-height: 150px;
+                border-radius: 8px;
+                border: 2px solid #e9ecef;
+            }
+            .image-preview-container {
+                position: relative;
+                display: inline-block;
+                margin-right: 10px;
+            }
+            .remove-image {
+                position: absolute;
+                top: -5px;
+                right: -5px;
+                background: #dc3545;
+                color: white;
+                border: none;
+                border-radius: 50%;
+                width: 25px;
+                height: 25px;
+                cursor: pointer;
+                font-size: 14px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+            .attach-button {
+                background: #6c757d;
+                color: white;
+                border: none;
+                padding: 10px 15px;
+                border-radius: 8px;
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                font-size: 14px;
+            }
+            .attach-button:hover { background: #5a6268; }
+            .message.user .message-image {
+                max-width: 300px;
+                max-height: 200px;
+                border-radius: 8px;
+                margin-bottom: 10px;
+                border: 2px solid rgba(255,255,255,0.3);
+            }
+            .file-info {
+                font-size: 12px;
+                color: #6c757d;
+                margin-top: 5px;
+            }
+        </style>
     </head>
     <body>
         <header class="header">
             <div class="header-content">
-                <div class="logo">🐘 Chat com Mamute</div>
+                <div class="logo">🐘 Chat com Mamute - Agora com Imagens! 📸</div>
                 <nav class="nav-menu">
                     <a href="/">Dashboard</a>
                     <a href="/chat">Chat</a>
                     <a href="/docs">API</a>
+                    <a href="#" onclick="return mamuteLogout();">Sair</a>
                 </nav>
                 <div class="status online" id="connectionStatus">Conectando...</div>
             </div>
@@ -321,24 +765,34 @@ async def chat_page():
                 <div class="chat-container">
                     <div class="chat-header">
                         <h2>🐘 Conversa com Mamute</h2>
-                        <p>Sua IA especialista em PostgreSQL</p>
+                        <p>Sua IA especialista em PostgreSQL - <strong>📸 Agora com suporte a imagens!</strong></p>
                     </div>
                     
                     <div class="chat-messages" id="chatMessages">
                         <!-- Mensagens aparecerão aqui -->
                     </div>
                     
-                    <div class="chat-input">
-                        <input 
-                            type="text" 
-                            id="messageInput" 
-                            placeholder="Digite sua mensagem para Mamute..." 
-                            disabled
-                        >
-                        <button id="sendButton" class="btn btn-primary" disabled>
-                            Enviar
-                        </button>
+                    <div class="chat-input-container">
+                        <div class="attachment-area" id="attachmentArea">
+                            <div id="imagePreview"></div>
+                        </div>
+                        <div class="input-row">
+                            <button type="button" class="attach-button" id="attachButton">
+                                📎 Anexar Imagem
+                            </button>
+                            <input 
+                                type="text" 
+                                id="messageInput" 
+                                placeholder="Digite sua mensagem para Mamute..." 
+                                style="flex: 1; padding: 12px; border-radius: 8px; border: 1px solid #ddd;"
+                                disabled
+                            >
+                            <button id="sendButton" class="btn btn-primary" disabled>
+                                Enviar
+                            </button>
+                        </div>
                     </div>
+                    <input type="file" id="fileInput" accept="image/*" style="display: none;">
                 </div>
             </div>
 
@@ -346,7 +800,7 @@ async def chat_page():
             <div class="card">
                 <div class="card-header">
                     <div class="card-icon">💡</div>
-                    <h3 class="card-title">Dicas para conversar com Mamute</h3>
+                    <h3 class="card-title">Dicas para conversar com Mamute - Agora com Imagens!</h3>
                 </div>
                 <div class="grid grid-2">
                     <div>
@@ -355,14 +809,16 @@ async def chat_page():
                             <li>"Quais tabelas estão disponíveis?"</li>
                             <li>"Analise os dados da tabela users"</li>
                             <li>"Mostre estatísticas da tabela vendas"</li>
+                            <li><strong>📸 "Anexe um diagram de banco e explique"</strong></li>
                         </ul>
                     </div>
                     <div>
-                        <h4>🛠️ Consultas SQL:</h4>
+                        <h4>🛠️ Consultas SQL e Imagens:</h4>
                         <ul>
                             <li>"Como otimizar esta consulta?"</li>
                             <li>"Crie uma consulta para relatório mensal"</li>
-                            <li>"Explique este plano de execução"</li>
+                            <li><strong>📷 "Analise este screenshot de erro"</strong></li>
+                            <li><strong>🖼️ "Interprete esta interface"</strong></li>
                         </ul>
                     </div>
                 </div>
@@ -370,63 +826,315 @@ async def chat_page():
         </main>
 
         <script src="/static/mamute.js"></script>
+        <script>
+        // Variáveis globais para imagem
+        let currentImage = null;
+        let ws = null;
+        let sessionId = null;
+        
+        // Configurar upload de imagem
+        function setupImageUpload() {
+            const attachButton = document.getElementById('attachButton');
+            const fileInput = document.getElementById('fileInput');
+            const attachmentArea = document.getElementById('attachmentArea');
+            const imagePreview = document.getElementById('imagePreview');
+            
+            attachButton.addEventListener('click', () => {
+                fileInput.click();
+            });
+            
+            fileInput.addEventListener('change', async (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                
+                if (!file.type.startsWith('image/')) {
+                    alert('Por favor, selecione apenas arquivos de imagem.');
+                    return;
+                }
+                
+                if (file.size > 10 * 1024 * 1024) {
+                    alert('Arquivo muito grande. Máximo 10MB.');
+                    return;
+                }
+                
+                try {
+                    const formData = new FormData();
+                    formData.append('file', file);
+                    
+                    const response = await fetch('/upload-image', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    if (response.ok) {
+                        const data = await response.json();
+                        currentImage = data;
+                        showImagePreview(data);
+                    } else {
+                        const error = await response.json();
+                        alert('Erro ao fazer upload: ' + error.detail);
+                    }
+                } catch (error) {
+                    alert('Erro ao fazer upload da imagem.');
+                }
+            });
+        }
+        
+        function showImagePreview(imageData) {
+            const attachmentArea = document.getElementById('attachmentArea');
+            const imagePreview = document.getElementById('imagePreview');
+            
+            imagePreview.innerHTML = `
+                <div class="image-preview-container">
+                    <img src="data:\${imageData.content_type};base64,\${imageData.base64_data}" class="image-preview">
+                    <button type="button" class="remove-image" onclick="removeImage()">&times;</button>
+                </div>
+                <div class="file-info">📸 \${imageData.original_name} (\${Math.round(imageData.size/1024)}KB)</div>
+            `;
+            
+            attachmentArea.style.display = 'block';
+        }
+        
+        function removeImage() {
+            currentImage = null;
+            document.getElementById('attachmentArea').style.display = 'none';
+            document.getElementById('imagePreview').innerHTML = '';
+            document.getElementById('fileInput').value = '';
+        }
+        
+        // Inicializar sistema de upload ao carregar a página
+        document.addEventListener('DOMContentLoaded', function() {
+            setupImageUpload();
+        });
+        </script>
     </body>
     </html>
     """
 
 @app.post("/session/start")
 async def start_session(session_data: SessionStart):
-    """Iniciar nova sessão"""
+    """Iniciar nova sessão."""
     if not ia_system:
         raise HTTPException(status_code=503, detail="Sistema não inicializado")
+
+    if database_is_available():
+        try:
+            session_id = ia_system.start_conversation(session_data.user_id)
+            logger.info(f"Nova sessão web criada: {session_id}")
+
+            return {
+                "session_id": session_id,
+                "message": "Sessão iniciada com sucesso",
+                "mamute_name": ia_system.config.ai_name,
+                "database_connected": True,
+                "mode": "database",
+            }
+        except Exception as e:
+            logger.warning(f"Falha ao criar sessão com banco; ativando modo degradado: {e}")
+
+    session_id = str(uuid.uuid4())
+    logger.warning(f"Usando sessão local degradada: {session_id}")
+
+    return {
+        "session_id": session_id,
+        "message": "Sessão local iniciada com sucesso. O Chat continuará funcionando em modo degradado.",
+        "mamute_name": ia_system.config.ai_name if ia_system else "Mamute",
+        "database_connected": False,
+        "mode": "degraded",
+    }
+
+# ============================
+# ENDPOINTS DE IMAGENS
+# ============================
+
+@app.post("/upload-image")
+async def upload_image(file: UploadFile = File(...), api_key: str = Depends(require_api_key)):
+    """Upload de imagem para o chat"""
+    # Verificar tipo de arquivo
+    allowed_types = ["image/jpeg", "image/png", "image/gif", "image/webp", "image/jpg"]
+    if file.content_type not in allowed_types:
+        raise HTTPException(status_code=400, detail="Tipo de arquivo não suportado. Use JPG, PNG, GIF ou WebP.")
     
-    try:
-        session_id = ia_system.start_conversation(session_data.user_id)
-        logger.info(f"Nova sessão web criada: {session_id}")
-        
-        return {
-            "session_id": session_id,
-            "message": "Sessão iniciada com sucesso",
-            "mamute_name": ia_system.config.ai_name
-        }
-    except Exception as e:
-        logger.error(f"Erro ao criar sessão: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    # Verificar tamanho (max 10MB)
+    content = await file.read()
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Arquivo muito grande. Máximo 10MB.")
+    
+    # Gerar nome único
+    file_extension = file.filename.split('.')[-1] if '.' in file.filename else 'jpg'
+    unique_filename = f"{uuid.uuid4()}.{file_extension}"
+    
+    # Salvar arquivo
+    file_path = os.path.join(UPLOADS_DIR, unique_filename)
+    with open(file_path, "wb") as buffer:
+        buffer.write(content)
+    
+    # Converter para base64 para envio
+    base64_data = base64.b64encode(content).decode('utf-8')
+    
+    logger.info(f"📸 Upload de imagem: {file.filename} -> {unique_filename} ({round(len(content)/1024)}KB)")
+    
+    return {
+        "filename": unique_filename,
+        "original_name": file.filename,
+        "content_type": file.content_type,
+        "size": len(content),
+        "base64_data": base64_data,
+        "url": f"/images/{unique_filename}"
+    }
+
+@app.get("/images/{filename}")
+async def get_image(filename: str):
+    """Servir imagem salva"""
+    file_path = os.path.join(UPLOADS_DIR, filename)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Imagem não encontrada")
+    
+    # Detectar tipo de conteúdo
+    content_type, _ = mimetypes.guess_type(file_path)
+    if not content_type:
+        content_type = "application/octet-stream"
+    
+    from fastapi.responses import Response
+    with open(file_path, "rb") as f:
+        return Response(content=f.read(), media_type=content_type)
 
 @app.post("/chat")
 async def chat_endpoint(chat_data: ChatMessage):
-    """Endpoint para conversar com Mamute (Modo Proativo)"""
+    """Endpoint para conversar com Mamute com suporte a imagens."""
     if not ia_system:
         raise HTTPException(status_code=503, detail="Sistema não inicializado")
-    
+
+    db_available = database_is_available()
+
     if not chat_data.session_id:
-        # Criar sessão automaticamente se não fornecida
-        session_id = ia_system.start_conversation()
+        if db_available:
+            session_id = await run_in_threadpool(ia_system.start_conversation)
+        else:
+            session_id = str(uuid.uuid4())
     else:
         session_id = chat_data.session_id
-    
+
+    # Verificar se há imagem anexada
+    has_image = chat_data.image_data is not None
+    image_context = ""
+
+    if has_image:
+        try:
+            image_bytes = base64.b64decode(chat_data.image_data)
+            image_size = len(image_bytes)
+            image_context = f" [IMAGEM ANEXADA: {chat_data.image_filename}, Tamanho: {round(image_size/1024)}KB]"
+            logger.info(f"📸 Imagem processada no chat - {chat_data.image_filename} ({round(image_size/1024)}KB)")
+        except Exception:
+            image_context = " [IMAGEM ANEXADA - formato não reconhecido]"
+
     try:
-        # Usar novo sistema de chat com personalidade e IA proativa
+        enhanced_message = chat_data.message + image_context
+        melhorias_aplicadas = aplicar_melhorias_automaticamente(enhanced_message)
+
+        if db_available and is_database_inspection_request(chat_data.message):
+            # Obter dados estruturados do DB e também um resumo legível usando credenciais AI
+            try:
+                inspection = get_database_inspection_data()
+            except Exception as e:
+                logger.error(f"Erro ao obter dados de inspeção de banco: {e}")
+                inspection = {
+                    "databases": [],
+                    "database_count": 0,
+                    "current_database": ia_system.config.database_url,
+                    "schemas": [],
+                    "schema_count": 0,
+                    "tables": [],
+                    "table_count": 0,
+                }
+
+            human_lines = [
+                f"Há {inspection['database_count']} banco(s) visível(is): {', '.join(inspection['databases']) if inspection['databases'] else 'nenhum'}.",
+                f"Banco atual conectado: {inspection['current_database']}.",
+                f"Há {inspection['schema_count']} schema(s): {', '.join(inspection['schemas']) if inspection['schemas'] else 'nenhum schema encontrado'}.",
+                f"Há {inspection['table_count']} tabela(s): {', '.join(inspection['tables']) if inspection['tables'] else 'nenhuma tabela encontrada'}.",
+            ]
+            response_text = "\n".join(human_lines)
+
+            return {
+                "response": response_text,
+                "database_inspection": inspection,
+                "session_id": session_id,
+                "tokens_used": 0,
+                "response_time": 0.0,
+                "relevant_documents": [],
+                "mamute_name": ia_system.config.ai_name,
+                "personality_mode": False,
+                "proactive_mode": False,
+                "applied_improvements": melhorias_aplicadas,
+                "has_image": has_image,
+                "image_processed": has_image,
+                "auto_improvements": melhorias_aplicadas,
+                "database_connected": True,
+                "mode": "database",
+            }
+
+        if not db_available:
+            response = await run_in_threadpool(
+                ia_system.ai_agent._chat_fallback,
+                enhanced_message,
+                session_id,
+                time.time(),
+            )
+            logger.warning(f"Chat em modo degradado para sessão {session_id}")
+
+            degraded_response = build_degraded_response(
+                response.get("response", "Não foi possível processar a mensagem no momento."),
+                session_id,
+                response.get("response_time", 0.0),
+            )
+            degraded_response["response"] = response.get("response", degraded_response["response"])
+            degraded_response["relevant_documents"] = response.get("relevant_documents", [])
+            degraded_response["tokens_used"] = response.get("tokens_used", 0)
+            degraded_response["response_time"] = response.get("response_time", 0.0)
+            degraded_response["has_image"] = has_image
+            degraded_response["image_processed"] = has_image
+            degraded_response["auto_improvements"] = melhorias_aplicadas
+
+            if melhorias_aplicadas.get("aplicado"):
+                degraded_response["response"] += "\n\n🛠️ Melhorias automáticas aplicadas em modo degradado."
+
+            return degraded_response
+
         if hasattr(ia_system, 'chat_personality') and ia_system.chat_personality:
             response = await ia_system.chat_personality.get_response(
-                user_input=chat_data.message,
+                user_input=enhanced_message,
                 context={
                     'session_id': session_id,
                     'use_context': chat_data.use_context,
-                    'search_documents': True
-                }
+                    'search_documents': True,
+                    'has_image': has_image,
+                    'image_filename': chat_data.image_filename if has_image else None,
+                },
             )
-            
-            # Log detalhado para modo proativo
+
+            if melhorias_aplicadas.get("aplicado"):
+                melhoria_texto = "\n\n🛠️ **MELHORIAS APLICADAS AUTOMATICAMENTE:**\n"
+                for melhoria in melhorias_aplicadas.get("melhorias", []):
+                    melhoria_texto += f"• **{melhoria['tipo']}**: {melhoria['status']}\n"
+                    if melhoria.get('detalhes'):
+                        melhoria_texto += f"  _{melhoria['detalhes']}_\n"
+
+                response["response"] += melhoria_texto
+
             proactive_info = ""
             if response.get('proactive_mode'):
                 applied_improvements = response.get('applied_improvements', [])
                 if applied_improvements:
                     proactive_info = f" | Melhorias: {len(applied_improvements)}"
                     logger.info(f"🚀 Modo Proativo - {len(applied_improvements)} melhorias aplicadas automaticamente!")
-            
-            logger.info(f"Chat Proativo - Sessão: {session_id}{proactive_info}")
-            
+
+            if melhorias_aplicadas.get("aplicado"):
+                logger.info(f"🛠️ Melhorias Automáticas - {melhorias_aplicadas.get('total_melhorias', 0)} aplicadas")
+
+            image_info = " | Imagem processada" if has_image else ""
+            logger.info(f"Chat Proativo - Sessão: {session_id}{proactive_info}{image_info}")
+
             return {
                 "response": response["response"],
                 "session_id": session_id,
@@ -438,30 +1146,102 @@ async def chat_endpoint(chat_data: ChatMessage):
                 "proactive_mode": response.get("proactive_mode", False),
                 "applied_improvements": response.get("applied_improvements", []),
                 "suggested_improvements": response.get("suggested_improvements", []),
-                "improvement_confidence": response.get("improvement_confidence", 0.0)
+                "improvement_confidence": response.get("improvement_confidence", 0.0),
+                "has_image": has_image,
+                "image_processed": has_image,
+                "auto_improvements": melhorias_aplicadas,
+                "database_connected": True,
+                "mode": "database",
             }
-        else:
-            # Fallback para sistema original
-            response = ia_system.chat_manager.send_message(
-                message=chat_data.message, 
-                session_id=session_id, 
-                use_context=chat_data.use_context,
-                search_documents=True
-            )
-            
-            logger.info(f"Chat Fallback - Sessão: {session_id}, Tokens: {response.get('tokens_used', 0)}")
-            
-            return {
-                "response": response["response"],
-                "session_id": session_id,
-                "tokens_used": response.get("tokens_used", 0),
-                "response_time": response.get("response_time", 0),
-                "relevant_documents": response.get("relevant_documents", []),
-                "mamute_name": ia_system.config.ai_name
-            }
-        
+
+        response = await run_in_threadpool(
+            ia_system.chat_manager.send_message,
+            enhanced_message,
+            session_id,
+            chat_data.use_context,
+            True,
+        )
+
+        if melhorias_aplicadas.get("aplicado"):
+            melhoria_texto = "\n\n🛠️ **MELHORIAS APLICADAS AUTOMATICAMENTE:**\n"
+            for melhoria in melhorias_aplicadas.get("melhorias", []):
+                melhoria_texto += f"• **{melhoria['tipo']}**: {melhoria['status']}\n"
+                if melhoria.get('detalhes'):
+                    melhoria_texto += f"  _{melhoria['detalhes']}_\n"
+
+            response["response"] += melhoria_texto
+            logger.info(f"🛠️ Melhorias Automáticas Fallback - {melhorias_aplicadas.get('total_melhorias', 0)} aplicadas")
+
+        logger.info(f"Chat Fallback - Sessão: {session_id}, Tokens: {response.get('tokens_used', 0)}")
+
+        return {
+            "response": response["response"],
+            "session_id": session_id,
+            "tokens_used": response.get("tokens_used", 0),
+            "response_time": response.get("response_time", 0),
+            "relevant_documents": response.get("relevant_documents", []),
+            "mamute_name": ia_system.config.ai_name,
+            "auto_improvements": melhorias_aplicadas,
+            "database_connected": True,
+            "mode": "database",
+        }
+
     except Exception as e:
         logger.error(f"Erro no chat: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/apply-improvements")
+async def apply_improvements_endpoint(database_name: str = None):
+    """Endpoint específico para aplicar melhorias no banco de dados"""
+    if not melhorias_sistema:
+        raise HTTPException(status_code=503, detail="Sistema de melhorias não inicializado")
+    
+    try:
+        melhorias_aplicadas = []
+        
+        # 1. Aplicar VACUUM ANALYZE
+        logger.info("🔧 Aplicando VACUUM ANALYZE...")
+        resultado_vacuum = melhorias_sistema.aplicar_vacuum_analyze(database_name)
+        melhorias_aplicadas.append({
+            "tipo": "VACUUM ANALYZE",
+            "resultado": resultado_vacuum
+        })
+        
+        # 2. Criar backup
+        logger.info("💾 Criando backup automático...")
+        resultado_backup = melhorias_sistema.criar_backup_automatico(database_name)
+        melhorias_aplicadas.append({
+            "tipo": "Backup Automático", 
+            "resultado": resultado_backup
+        })
+        
+        # 3. Verificar performance (placeholder)
+        melhorias_aplicadas.append({
+            "tipo": "Verificação de Performance",
+            "resultado": {
+                "status": "info",
+                "acao": "Análise de Performance",
+                "mensagem": "Recomenda-se configurar pg_stat_statements para monitoramento",
+                "timestamp": datetime.now().isoformat()
+            }
+        })
+        
+        # Contar sucessos
+        sucessos = sum(1 for m in melhorias_aplicadas if m["resultado"].get("status") == "sucesso")
+        total = len(melhorias_aplicadas)
+        
+        logger.info(f"✅ Melhorias aplicadas: {sucessos}/{total} com sucesso")
+        
+        return {
+            "status": "concluido",
+            "total_melhorias": total,
+            "sucessos": sucessos,
+            "melhorias": melhorias_aplicadas,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Erro ao aplicar melhorias: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/proactive/toggle")
@@ -508,7 +1288,7 @@ async def get_proactive_status():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/documents")
-async def add_document(doc_data: DocumentAdd):
+async def add_document(doc_data: DocumentAdd, api_key: str = Depends(require_api_key)):
     """Adicionar documento ao sistema"""
     if not ia_system:
         raise HTTPException(status_code=503, detail="Sistema não inicializado")
@@ -531,20 +1311,22 @@ async def add_document(doc_data: DocumentAdd):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/query")
-async def execute_query(query_data: DatabaseQuery):
+async def execute_query(query_data: DatabaseQuery, api_key: str = Depends(require_api_key)):
     """Executar consulta SQL (apenas SELECT)"""
     if not ia_system:
         raise HTTPException(status_code=503, detail="Sistema não inicializado")
     
-    # Verificar se é uma query SELECT (segurança)
-    if not query_data.query.strip().upper().startswith("SELECT"):
-        raise HTTPException(
-            status_code=400, 
-            detail="Apenas consultas SELECT são permitidas"
-        )
+    # Verificar se é uma query SELECT segura
+    try:
+        ia_system.db_manager.assert_safe_select(query_data.query)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
     
     try:
-        results = ia_system.db_manager.execute_query(query_data.query)
+        results = await run_in_threadpool(
+            ia_system.db_manager.execute_query,
+            query_data.query
+        )
         
         return {
             "results": results,
@@ -614,6 +1396,12 @@ async def advanced_dashboard():
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <link rel="stylesheet" href="/static/mamute.css">
         <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+        <script>
+        function mamuteLogout(){
+            if(confirm('Deseja realmente se desconectar?')){ window.location.href='/'; }
+            return false;
+        }
+        </script>
     </head>
     <body>
         <header class="header">
@@ -624,6 +1412,7 @@ async def advanced_dashboard():
                     <a href="/dashboard/advanced">Avançado</a>
                     <a href="/chat">Chat</a>
                     <a href="/docs">API</a>
+                    <a href="#" onclick="return mamuteLogout();">Sair</a>
                 </nav>
                 <div class="dashboard-controls">
                     <label>
@@ -961,6 +1750,12 @@ async def search_page():
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <link rel="stylesheet" href="/static/mamute.css">
+        <script>
+        function mamuteLogout(){
+            if(confirm('Deseja realmente se desconectar?')){ window.location.href='/'; }
+            return false;
+        }
+        </script>
     </head>
     <body>
         <header class="header">
@@ -972,6 +1767,7 @@ async def search_page():
                     <a href="/chat">Chat</a>
                     <a href="/search">Busca</a>
                     <a href="/docs">API</a>
+                    <a href="#" onclick="return mamuteLogout();">Sair</a>
                 </nav>
             </div>
         </header>
@@ -1185,7 +1981,8 @@ async def upload_document(
     file: UploadFile = File(...),
     title: str = Form(...),
     category: str = Form(None),
-    source: str = Form(None)
+    source: str = Form(None),
+    api_key: str = Depends(require_api_key)
 ):
     """Upload de documento para o sistema"""
     if not ia_system:
@@ -1273,7 +2070,7 @@ async def upload_document(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/upload/bulk")
-async def upload_bulk_documents(files: List[UploadFile] = File(...)):
+async def upload_bulk_documents(files: List[UploadFile] = File(...), api_key: str = Depends(require_api_key)):
     """Upload múltiplo de documentos"""
     if not ia_system:
         raise HTTPException(
@@ -1352,7 +2149,8 @@ async def list_documents(
     page: int = 1,
     limit: int = 20,
     category: str = None,
-    source: str = None
+    source: str = None,
+    api_key: str = Depends(require_api_key)
 ):
     """Lista documentos cadastrados"""
     if not ia_system:
@@ -1416,7 +2214,7 @@ async def list_documents(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/documents/{document_id}")
-async def delete_document(document_id: str):
+async def delete_document(document_id: str, api_key: str = Depends(require_api_key)):
     """Deleta um documento"""
     if not ia_system:
         raise HTTPException(
@@ -1434,7 +2232,7 @@ async def delete_document(document_id: str):
         
         # Deletar documento
         delete_query = "DELETE FROM documents WHERE id = %s"
-        ia_system.db_manager.execute_query(delete_query, (document_id,))
+        ia_system.db_manager.execute_command(delete_query, (document_id,))
         
         return {
             'success': True,
@@ -1458,6 +2256,12 @@ async def upload_page():
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <link rel="stylesheet" href="/static/mamute.css">
+        <script>
+        function mamuteLogout(){
+            if(confirm('Deseja realmente se desconectar?')){ window.location.href='/'; }
+            return false;
+        }
+        </script>
     </head>
     <body>
         <header class="header">
@@ -1470,6 +2274,7 @@ async def upload_page():
                     <a href="/search">Busca</a>
                     <a href="/upload">Upload</a>
                     <a href="/docs">API</a>
+                    <a href="#" onclick="return mamuteLogout();">Sair</a>
                 </nav>
             </div>
         </header>
@@ -1830,7 +2635,7 @@ if __name__ == "__main__":
     uvicorn.run(
         "web_app:app", 
         host="0.0.0.0", 
-        port=8000, 
+        port=8001, 
         reload=True,
         log_level="info"
     )

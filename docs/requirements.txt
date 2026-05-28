@@ -1,0 +1,59 @@
+# DEPENDÊNCIAS ESSENCIAIS DO MAMUTE - SISTEMA DEFINITIVO
+# ======================================================
+
+# Web Framework e API
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+websockets==12.0
+python-multipart==0.0.6
+
+# Banco de dados PostgreSQL
+psycopg2-binary==2.9.9
+sqlalchemy==2.0.23
+
+# IA e Machine Learning
+openai==1.3.0
+langchain==0.0.345
+numpy==1.26.4
+sentence-transformers==2.2.2
+httpx==0.24.1
+httpcore==0.17.3
+
+# Utilidades
+python-dotenv==1.0.0
+requests==2.31.0
+aiofiles==23.2.1
+psutil==5.9.6
+schedule==1.2.0
+
+# Processamento de dados
+pandas==2.1.4
+openpyxl==3.1.2
+xlsxwriter==3.1.9
+
+# Interface e visualização  
+streamlit==1.28.1
+plotly==5.17.0
+matplotlib==3.8.2
+seaborn==0.13.0
+
+# Templates e web
+jinja2==3.1.2
+
+# Logging e monitoramento
+colorlog==6.7.0
+
+# Validação e parsing
+pydantic==2.5.0
+email-validator==2.1.0
+
+# Criptografia e segurança
+cryptography==41.0.7
+
+# Utilitários adicionais
+rich==13.7.0
+typer==0.9.0
+click==8.1.7
+
+# Sistema específico
+pathlib2==2.3.7; python_version < '3.4'
