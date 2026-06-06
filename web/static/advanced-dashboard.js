@@ -458,8 +458,56 @@ class AdvancedDashboard {
 
     async init() {
         await this.loadMetrics();
+        await this.loadNotifications();
         this.setupEventListeners();
         this.startAutoRefresh();
+    }
+
+    async loadNotifications() {
+        try {
+            const response = await fetch('/api/notifications?limit=8');
+            if (!response.ok) {
+                throw new Error(`Erro ${response.status}: ${response.statusText}`);
+            }
+
+            const data = await response.json();
+            this.updateNotifications(data.notifications || []);
+        } catch (error) {
+            console.error('Erro ao carregar notificações:', error);
+            this.showError('Erro ao carregar notificações recentes');
+        }
+    }
+
+    updateNotifications(notifications) {
+        const container = document.getElementById('notificationsList');
+        if (!container) {
+            return;
+        }
+
+        if (!notifications || notifications.length === 0) {
+            container.innerHTML = '<p>Nenhuma notificação recente encontrada.</p>';
+            return;
+        }
+
+        container.innerHTML = notifications.map(notification => {
+            const levelClass = `notification-${notification.level}`;
+            const details = notification.metadata && Object.keys(notification.metadata).length
+                ? `<div class="notification-meta">${Object.entries(notification.metadata).map(([key, value]) => `${key}: ${value}`).join(' • ')}</div>`
+                : '';
+
+            return `
+                <div class="notification-item ${levelClass}">
+                    <h4>${notification.title}</h4>
+                    <p>${notification.message}</p>
+                    <div class="notification-meta">
+                        <span>${new Date(notification.created_at || notification.timestamp).toLocaleString('pt-BR')}</span>
+                        <span> • ${notification.source || 'Mamute'}</span>
+                        ${notification.read ? ' • Lida' : ''}
+                    </div>
+                    ${details}
+                </div>
+            `;
+        }).join('');
     }
 
     async loadMetrics() {
@@ -594,7 +642,16 @@ class AdvancedDashboard {
         // Botão de refresh manual
         const refreshBtn = document.getElementById('refreshDashboard');
         if (refreshBtn) {
-            refreshBtn.addEventListener('click', () => this.loadMetrics());
+            refreshBtn.addEventListener('click', () => {
+                this.loadMetrics();
+                this.loadNotifications();
+            });
+        }
+
+        // Botão de refresh de notificações
+        const refreshNotificationsBtn = document.getElementById('refreshNotifications');
+        if (refreshNotificationsBtn) {
+            refreshNotificationsBtn.addEventListener('click', () => this.loadNotifications());
         }
 
         // Toggle auto-refresh
@@ -620,6 +677,7 @@ class AdvancedDashboard {
         
         this.intervalId = setInterval(() => {
             this.loadMetrics();
+            this.loadNotifications();
         }, this.refreshInterval);
     }
 

@@ -342,7 +342,7 @@ class AdminDashboard:
 # Criar instância global
 admin_dashboard = AdminDashboard()
 
-async def get_admin_dashboard_data():
+async def get_admin_dashboard_data() -> Dict[str, Any]:
     """Obter todos os dados do dashboard admin"""
     if not admin_dashboard.ia_system:
         await admin_dashboard.initialize()

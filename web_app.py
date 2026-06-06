@@ -33,6 +33,9 @@ from src.utils.logger import setup_logger
 from src.utils.config import Config
 from src.utils.metrics import AdvancedMetricsManager
 from src.utils.search import IntelligentSearchEngine, SearchType, SearchFilter, ContentType
+from src.apps.mamute_proactive_ml import MamuteProactiveML
+from notification_system import notification_system
+
 if TYPE_CHECKING:
     from aplicar_melhorias_automatico import MelhorasBancoDados  # type: ignore
 
@@ -81,6 +84,17 @@ class SearchRequest(BaseModel):
     min_similarity: float = 0.5
     max_results: int = 20
 
+class MLRequest(BaseModel):
+    user_input: str
+    candidate_actions: Optional[List[str]] = None
+    top_n: int = 3
+    threshold: float = 0.2
+
+class MLTrainRequest(BaseModel):
+    user_input: str
+    action: str
+    success: bool = True
+
 # Inicializar sistema
 from contextlib import asynccontextmanager
 
@@ -90,12 +104,13 @@ ia_system = None
 metrics_manager = None
 search_engine = None
 melhorias_sistema = None
+ml_advisor = None
 db_ready = False
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    global ia_system, metrics_manager, search_engine, melhorias_sistema, db_ready
+    global ia_system, metrics_manager, search_engine, melhorias_sistema, ml_advisor, db_ready
     try:
         ia_system = IAPostgreSQL()
         try:
@@ -109,6 +124,7 @@ async def lifespan(app: FastAPI):
         metrics_manager = AdvancedMetricsManager(ia_system.db_manager, ia_system.config)
         search_engine = IntelligentSearchEngine(ia_system.db_manager, ia_system.embedding_manager, ia_system.config)
         melhorias_sistema = MelhorasBancoDados()
+        ml_advisor = MamuteProactiveML()
         logger.info("🐘 Mamute Web API iniciado com sucesso!")
     except Exception as e:
         logger.error(f"Erro ao inicializar Mamute: {e}")
@@ -169,6 +185,111 @@ async def postgresql_inspection():
                 "trace": tb.splitlines()[-5:],
             },
         )
+
+@app.get("/api/notifications", response_class=JSONResponse)
+async def get_notifications(
+    limit: int = 20,
+    level: Optional[str] = None,
+    read: Optional[bool] = None,
+    hours_ago: int = 24,
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key")
+):
+    """Retorna notificações recentes do sistema."""
+    if base_config.api_key and base_config.api_key != x_api_key:
+        raise HTTPException(status_code=401, detail="API key inválida ou ausente")
+
+    try:
+        notifications = notification_system.get_notifications_from_db(
+            limit=limit,
+            level=level,
+            read=read,
+            hours_ago=hours_ago,
+        )
+        return {
+            "count": len(notifications),
+            "notifications": notifications
+        }
+    except Exception as e:
+        logger.error(f"Erro ao buscar notificações: {e}")
+        raise HTTPException(status_code=500, detail="Erro ao buscar notificações")
+
+@app.post("/api/notifications/{notification_id}/read", response_class=JSONResponse)
+async def mark_notification_read(
+    notification_id: str,
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key")
+):
+    """Marca uma notificação como lida."""
+    if base_config.api_key and base_config.api_key != x_api_key:
+        raise HTTPException(status_code=401, detail="API key inválida ou ausente")
+
+    try:
+        success = await notification_system.mark_as_read(notification_id)
+        if not success:
+            raise RuntimeError("Não foi possível marcar a notificação como lida")
+
+        return {"status": "ok", "notification_id": notification_id}
+    except Exception as e:
+        logger.error(f"Erro ao marcar notificação como lida: {e}")
+        raise HTTPException(status_code=500, detail="Erro ao marcar notificação como lida")
+
+@app.post("/api/ml/recommendations", response_class=JSONResponse)
+async def get_ml_recommendations(request: MLRequest, x_api_key: Optional[str] = Header(None, alias="X-API-Key")):
+    if base_config.api_key and base_config.api_key != x_api_key:
+        raise HTTPException(status_code=401, detail="API key inválida ou ausente")
+
+    if not ml_advisor:
+        raise HTTPException(status_code=503, detail="ML advisor não inicializado")
+
+    try:
+        recommendations = ml_advisor.recommend_actions(
+            request.user_input,
+            top_n=request.top_n,
+            threshold=request.threshold,
+            candidate_actions=request.candidate_actions
+        )
+        return {
+            "status": "ok",
+            "recommendations": [
+                {"action": action, "score": score}
+                for action, score in recommendations
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Erro ao gerar recomendações de ML: {e}")
+        raise HTTPException(status_code=500, detail="Erro ao gerar recomendações de ML")
+
+@app.post("/api/ml/train", response_class=JSONResponse)
+async def train_ml_model(request: MLTrainRequest, x_api_key: Optional[str] = Header(None, alias="X-API-Key")):
+    if base_config.api_key and base_config.api_key != x_api_key:
+        raise HTTPException(status_code=401, detail="API key inválida ou ausente")
+
+    if not ml_advisor:
+        raise HTTPException(status_code=503, detail="ML advisor não inicializado")
+
+    try:
+        ml_advisor.train(request.user_input, request.action, request.success)
+        return {"status": "ok", "trained": True}
+    except Exception as e:
+        logger.error(f"Erro ao treinar modelo de ML: {e}")
+        raise HTTPException(status_code=500, detail="Erro ao treinar modelo de ML")
+
+@app.get("/api/ml/status", response_class=JSONResponse)
+async def get_ml_status(x_api_key: Optional[str] = Header(None, alias="X-API-Key")):
+    if base_config.api_key and base_config.api_key != x_api_key:
+        raise HTTPException(status_code=401, detail="API key inválida ou ausente")
+
+    if not ml_advisor:
+        raise HTTPException(status_code=503, detail="ML advisor não inicializado")
+
+    try:
+        return {
+            "status": "ok",
+            "known_actions": ml_advisor.get_known_actions(),
+            "model_file": str(ml_advisor.model_path)
+        }
+    except Exception as e:
+        logger.error(f"Erro ao recuperar status do ML: {e}")
+        raise HTTPException(status_code=500, detail="Erro ao recuperar status do ML")
 
 # Configurar CORS com allowlist
 app.add_middleware(
@@ -1428,6 +1549,15 @@ async def advanced_dashboard():
             <div id="alertsContainer"></div>
             <div id="errorContainer"></div>
 
+            <!-- Notificações Recentes -->
+            <section class="notifications-panel">
+                <div class="panel-header">
+                    <h2>🔔 Notificações Recentes</h2>
+                    <button type="button" id="refreshNotifications" class="btn btn-sm">Atualizar</button>
+                </div>
+                <div id="notificationsList" class="notifications-list">Carregando notificações...</div>
+            </section>
+
             <!-- Cards de Estatísticas Principais -->
             <div class="stats-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 2rem;">
                 <div class="stat-card">
@@ -1658,6 +1788,67 @@ async def advanced_dashboard():
                 font-size: 1.2rem;
                 cursor: pointer;
                 color: inherit;
+            }
+
+            .notifications-panel {
+                background: rgba(255, 255, 255, 0.95);
+                border-radius: 15px;
+                padding: 1.5rem;
+                box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+                margin-bottom: 2rem;
+            }
+
+            .notifications-panel .panel-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 1rem;
+            }
+
+            .notifications-panel h2 {
+                margin: 0;
+                font-size: 1.2rem;
+                color: #333;
+            }
+
+            .notifications-list {
+                display: grid;
+                gap: 0.75rem;
+            }
+
+            .notification-item {
+                background: #f8f9fa;
+                border-radius: 12px;
+                padding: 1rem;
+                border-left: 4px solid #667eea;
+            }
+
+            .notification-item.notification-warning {
+                border-color: #ffc107;
+            }
+
+            .notification-item.notification-error {
+                border-color: #dc3545;
+            }
+
+            .notification-item.notification-success {
+                border-color: #28a745;
+            }
+
+            .notification-item h4 {
+                margin: 0 0 0.5rem;
+                font-size: 1rem;
+            }
+
+            .notification-item p {
+                margin: 0.25rem 0;
+                color: #444;
+                font-size: 0.95rem;
+            }
+
+            .notification-meta {
+                font-size: 0.8rem;
+                color: #666;
             }
         </style>
     </body>

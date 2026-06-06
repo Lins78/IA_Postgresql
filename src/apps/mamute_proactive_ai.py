@@ -17,11 +17,13 @@ from src.utils.config import Config
 from src.utils.logger import setup_logger
 from src.ai.agent import AIAgent
 from mamute_personality import MamutePersonality
+from mamute_proactive_ml import MamuteProactiveML
+from notification_system import NotificationSystem, notification_system as global_notification_system, NotificationChannel, NotificationLevel
 
 class MamuteProactiveIA:
     """IA Proativa que propõe e aplica melhorias automaticamente"""
     
-    def __init__(self, config_file: str = ".env"):
+    def __init__(self, config_file: str = ".env", notification_system: NotificationSystem = None):
         """Inicializar IA Proativa"""
         self.config = Config(config_file)
         self.logger = setup_logger("MamuteProactiveIA")
@@ -67,6 +69,12 @@ class MamuteProactiveIA:
             'ask_before_system_changes': True
         }
         
+        # Sistema de notificações para eventos proativos
+        self.notification_system = notification_system or global_notification_system
+
+        # Modelo de aprendizado de máquina leve para recomendações de melhorias
+        self.ml_advisor = MamuteProactiveML()
+
         # Conhecimento completo sobre linguagens de programação
         self.programming_languages = {
             'pascal': {
@@ -500,6 +508,10 @@ class MamuteProactiveIA:
                             'result': result,
                             'timestamp': datetime.now().isoformat()
                         })
+                        try:
+                            self.ml_advisor.train(user_input, improvement['action'])
+                        except Exception:
+                            self.logger.debug("Falha ao treinar modelo de ML, continuando sem interrupção")
                 else:
                     pending_confirmations.append(improvement)
             
@@ -507,12 +519,58 @@ class MamuteProactiveIA:
             enhanced_response = await self.format_enhanced_response(
                 response, applied_improvements, pending_confirmations
             )
+
+            await self._publish_analysis_summary(applied_improvements, pending_confirmations)
             
             return enhanced_response
             
         except Exception as e:
             self.logger.error(f"Erro na análise proativa: {e}")
             return await self.get_standard_response(user_input, context)
+
+    async def _publish_analysis_summary(self, applied: List[Dict], pending: List[Dict]):
+        """Publicar notificação resumida após a análise proativa."""
+        try:
+            if applied and not pending:
+                title = "Melhorias aplicadas com sucesso"
+                message = f"{len(applied)} melhoria(s) foram aplicadas automaticamente ao sistema."
+                level = NotificationLevel.SUCCESS
+            elif applied and pending:
+                title = "Melhorias aplicadas e sugestões pendentes"
+                message = (
+                    f"{len(applied)} melhoria(s) aplicadas automaticamente e "
+                    f"{len(pending)} sugestão(ões) aguardando confirmação."
+                )
+                level = NotificationLevel.WARNING
+            elif pending:
+                title = "Sugestões de melhorias pendentes"
+                message = f"{len(pending)} melhoria(s) foram identificadas e aguardam sua confirmação."
+                level = NotificationLevel.INFO
+            else:
+                return
+
+            metadata = {
+                'applied_count': len(applied),
+                'pending_count': len(pending),
+                'applied_actions': [imp['action'] for imp in applied],
+                'pending_actions': [imp['action'] for imp in pending]
+            }
+
+            notification = self.notification_system.create_notification(
+                title=title,
+                message=message,
+                level=level,
+                metadata=metadata,
+                channels=[
+                    NotificationChannel.LOG,
+                    NotificationChannel.DATABASE,
+                    NotificationChannel.WEBSOCKET,
+                ]
+            )
+
+            await self.notification_system.send_notification(notification)
+        except Exception as e:
+            self.logger.warning(f"Erro ao publicar resumo da análise proativa: {e}")
     
     async def get_standard_response(self, user_input: str, context: Dict = None) -> Dict[str, Any]:
         """Obter resposta padrão da IA"""
@@ -600,7 +658,39 @@ class MamuteProactiveIA:
         # Análise proativa do sistema
         system_improvements = await self._analyze_system_health()
         improvements.extend(system_improvements)
-        
+
+        # Ajustar confiança baseada em modelo de aprendizado de máquina
+        try:
+            predicted_scores = self.ml_advisor.predict_scores(
+                user_input,
+                [improvement['action'] for improvement in improvements]
+            )
+            for improvement in improvements:
+                score = predicted_scores.get(improvement['action'], 0.0)
+                if score > 0:
+                    improvement['confidence'] = min(1.0, max(improvement.get('confidence', 0.0), score + 0.1))
+                    improvement['ml_score'] = round(score, 2)
+        except Exception as e:
+            self.logger.debug(f"Falha ao prever melhorias de ML: {e}")
+
+        # Sugerir ações adicionais se o modelo já aprendeu padrões relevantes
+        if not improvements:
+            try:
+                ml_suggestions = self.ml_advisor.recommend_actions(user_input, top_n=3, threshold=0.15)
+                for action, score in ml_suggestions:
+                    if action in self.available_actions:
+                        improvements.append({
+                            'type': 'ml_suggestion',
+                            'action': action,
+                            'description': f'Sugestão baseada em aprendizado de máquina para {action.replace("_", " ")}',
+                            'confidence': min(0.95, score + 0.1),
+                            'impact': 'médio',
+                            'safe': action in self.safe_auto_actions,
+                            'source': 'ml_model'
+                        })
+            except Exception as e:
+                self.logger.debug(f"Falha ao gerar sugestões de ML: {e}")
+
         return improvements
     
     def _get_language_specific_improvements(self, language: str, user_input: str) -> List[Dict]:
@@ -705,7 +795,39 @@ class MamuteProactiveIA:
             self.logger.warning(f"Erro na análise do sistema: {e}")
         
         return improvements
-    
+
+    async def _publish_improvement_notification(self, improvement: Dict, result: Dict):
+        """Publicar notificação quando uma melhoria é aplicada ou falha."""
+        try:
+            title = f"Melhoria: {improvement.get('description', improvement.get('action', 'Ação de melhoria'))}"
+            if result.get('success'):
+                message = result.get('message', 'Melhoria aplicada com sucesso.')
+                level = NotificationLevel.SUCCESS
+            else:
+                message = result.get('error', 'Falha ao aplicar melhoria.')
+                level = NotificationLevel.ERROR
+
+            notification = self.notification_system.create_notification(
+                title=title,
+                message=message,
+                level=level,
+                metadata={
+                    'action': improvement.get('action'),
+                    'type': improvement.get('type'),
+                    'impact': improvement.get('impact'),
+                    'confidence': improvement.get('confidence'),
+                    'details': result.get('details'),
+                },
+                channels=[
+                    NotificationChannel.LOG,
+                    NotificationChannel.DATABASE,
+                    NotificationChannel.WEBSOCKET,
+                ]
+            )
+            await self.notification_system.send_notification(notification)
+        except Exception as e:
+            self.logger.warning(f"Erro ao publicar notificação: {e}")
+
     async def should_apply_automatically(self, improvement: Dict) -> bool:
         """Determinar se uma melhoria deve ser aplicada automaticamente"""
         # Permitir apenas ações explicitamente marcadas como seguras
@@ -757,17 +879,21 @@ class MamuteProactiveIA:
                 'applied_automatically': True,
                 'timestamp': datetime.now().isoformat()
             })
+
+            await self._publish_improvement_notification(improvement, result)
             
             return result
             
         except Exception as e:
             self.logger.error(f"Erro ao aplicar melhoria {action_name}: {e}")
-            return {
+            error_result = {
                 'success': False,
                 'error': str(e),
                 'improvement': improvement,
                 'timestamp': datetime.now().isoformat()
             }
+            await self._publish_improvement_notification(improvement, error_result)
+            return error_result
     
     # Implementação das ações específicas
     async def optimize_database_queries(self, improvement: Dict) -> Dict[str, Any]:

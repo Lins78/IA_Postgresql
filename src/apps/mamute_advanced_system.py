@@ -2,12 +2,11 @@
 Integração das Novas Funcionalidades do Mamute
 Sistema unificado para gerenciar todas as extensões avançadas
 """
-import os
 import sys
 import asyncio
 import json
 from datetime import datetime
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Any
 from pathlib import Path
 
 # Adicionar o diretório principal ao path
@@ -23,7 +22,7 @@ if str(APPS_DIR) not in sys.path:
 from admin_dashboard import AdminDashboard, get_admin_dashboard_data
 from backup_system import MamuteBackupSystem
 from data_migration_utils import DataMigrationUtilities
-from notification_system import NotificationSystem, notify_info, notify_success, notify_warning, notify_error
+from notification_system import notification_system as global_notification_system, notify_info, notify_success, notify_warning, notify_error
 from performance_analyzer import PerformanceAnalyzer
 from report_generator import ReportGenerator
 
@@ -42,12 +41,12 @@ class MamuteAdvancedSystem:
         self.admin_dashboard = AdminDashboard()
         self.backup_system = MamuteBackupSystem()
         self.migration_utils = DataMigrationUtilities()
-        self.notification_system = NotificationSystem()
+        self.notification_system = global_notification_system
         self.performance_analyzer = PerformanceAnalyzer()
         self.report_generator = ReportGenerator()
         
         # Status dos subsistemas
-        self.subsystems_status = {}
+        self.subsystems_status: Dict[str, bool] = {}
         
         self.logger.info("Sistema avançado integrado do Mamute inicializado")
     
@@ -59,6 +58,7 @@ class MamuteAdvancedSystem:
             # Inicializar dashboard admin
             await notify_info("Inicialização", "Inicializando dashboard administrativo...")
             admin_init = await self.admin_dashboard.initialize()
+            initialization_results: Dict[str, bool] = {}
             initialization_results['admin_dashboard'] = admin_init
             
             # Configurar sistema de notificações
@@ -108,7 +108,7 @@ class MamuteAdvancedSystem:
     async def get_system_status(self) -> Dict[str, Any]:
         # Obter status geral do sistema
         try:
-            status = {
+            status: Dict[str, Any] = {
                 'status': 'operational',
                 'timestamp': datetime.now().isoformat(),
                 'subsystems': {}
@@ -149,10 +149,10 @@ class MamuteAdvancedSystem:
             await notify_info("Relatório de Saúde", "Gerando relatório completo do sistema...")
             
             # Obter dados do dashboard admin
-            admin_data = await get_admin_dashboard_data()
+            admin_data: Dict[str, Any] = await get_admin_dashboard_data()
             
             # Obter métricas de performance
-            performance_report = self.performance_analyzer.generate_performance_report()
+            performance_report: Dict[str, Any] = self.performance_analyzer.generate_performance_report()
             
             # Status dos subsistemas
             subsystems_health = {
@@ -169,7 +169,7 @@ class MamuteAdvancedSystem:
             # Relatórios gerados
             available_reports = self.report_generator.list_reports()
             
-            health_report = {
+            health_report: Dict[str, Any] = {
                 'timestamp': datetime.now().isoformat(),
                 'system_overview': {
                     'mamute_version': '2.0.0-advanced',
@@ -245,11 +245,14 @@ class MamuteAdvancedSystem:
         try:
             await notify_info("Diagnósticos", "Executando diagnósticos do sistema...")
             
-            diagnostics = {
+            tests_performed: List[Dict[str, Any]] = []
+            issues_found: List[str] = []
+            recommendations: List[str] = []
+            diagnostics: Dict[str, Any] = {
                 'timestamp': datetime.now().isoformat(),
-                'tests_performed': [],
-                'issues_found': [],
-                'recommendations': []
+                'tests_performed': tests_performed,
+                'issues_found': issues_found,
+                'recommendations': recommendations
             }
             
             # Teste 1: Conexão com banco
@@ -318,7 +321,7 @@ class MamuteAdvancedSystem:
                 diagnostics['issues_found'].append(f'Memory test error: {str(e)}')
             
             # Teste 4: Verificar subsistemas
-            failed_subsystems = [
+            failed_subsystems: List[str] = [
                 name for name, status in self.subsystems_status.items() 
                 if not status
             ]
